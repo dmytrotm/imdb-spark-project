@@ -1,4 +1,3 @@
-
 from pyspark.sql import SparkSession
 from utils.schemas import (
     name_basics_schema, title_akas_schema, title_basics_schema,

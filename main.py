@@ -1,6 +1,6 @@
 from pyspark.sql import SparkSession
 from utils.reader import read_data
-from functions.business_questions_1 import writers_directors_collaboration_trend, top_directors_by_high_rating_and_votes, correlation_seasons_rating, top_episodes_by_votes_and_rating
+from analysis import describe_dataframe, directors_increasing_ratings_trend, genre_popularity_trend, genre_actor_cyclicality, genre_duration_rating_analysis, writer_director_collaboration
 
 def main():
     spark = SparkSession.builder.appName("IMDBAnalysis").getOrCreate()
@@ -8,25 +8,24 @@ def main():
     # Read the data
     dataframes = read_data(spark)
 
-    # # Analyze each dataframe
-    # for name, df in dataframes.items():
-    #     describe_dataframe(df, name)
+    # Analyze each dataframe
+    for name, df in dataframes.items():
+        describe_dataframe(df, name)
 
-    print("1. Топ сценаристи-режисери:")
-    collab = writers_directors_collaboration_trend(dataframes)
-    collab.show(truncate=False)
+    print("Analyzing writer-director collaborations...")
+    writer_director_collaboration(dataframes, save_path="visualizations")
 
-    print("2. Режисери з фільмами рейтингом >8 та голосами по роках:")
-    directors_votes = top_directors_by_high_rating_and_votes(dataframes)
-    directors_votes.show(50)
+    print("Analyzing directors with increasing ratings trend...")
+    directors_increasing_ratings_trend(dataframes, save_path="visualizations")
 
-    print("3. Кореляція кількості сезонів із рейтингом:")
-    corr = correlation_seasons_rating(dataframes)
-    corr.show()
+    print("Analyzing genre popularity trends...")
+    genre_popularity_trend(dataframes, save_path="visualizations")
 
-    print("4. Топ TV-епізодів за кількістю голосів і рейтингом:")
-    top_eps = top_episodes_by_votes_and_rating(dataframes)
-    top_eps.show(truncate=False)
+    print("Analyzing genre and actor cyclicality...")
+    genre_actor_cyclicality(dataframes, save_path="visualizations")
+
+    print("Analyzing genre duration and rating...")
+    genre_duration_rating_analysis(dataframes, save_path="visualizations")
 
     spark.stop()
 
