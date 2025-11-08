@@ -1,6 +1,5 @@
 from pyspark.sql import SparkSession
 from utils.reader import read_data
-from utils.analysis import describe_dataframe
 from functions.business_questions_1 import writers_directors_collaboration_trend, top_directors_by_high_rating_and_votes, correlation_seasons_rating, top_episodes_by_votes_and_rating
 
 def main():

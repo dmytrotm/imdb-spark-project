@@ -1,4 +1,3 @@
-from pyspark.sql import SparkSession
 from pyspark.sql.functions import explode, split, col, avg, count, desc, row_number, max as spark_max
 from pyspark.sql.window import Window
 
@@ -60,7 +59,7 @@ def correlation_seasons_rating(datasets):
 
     seasons_count = episodes.groupBy("parentTconst").agg(spark_max("seasonNumber").alias("num_seasons"))
     tv_with_seasons = basics.join(seasons_count, basics.tconst == seasons_count.parentTconst).select(basics.tconst, "num_seasons")
-    tv_with_ratings = tv_with_seasons.join(ratings, tv_with_seasons.tconst == ratings.tconst)
+    tv_with_ratings = tv_with_seasons.join(ratings, "tconst")
 
     corr_data = tv_with_ratings.groupBy("num_seasons").agg(
         avg("averageRating").alias("avg_rating"),
