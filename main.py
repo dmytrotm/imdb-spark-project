@@ -1,6 +1,6 @@
 from pyspark.sql import SparkSession
 from utils.reader import read_data
-from functions.business_questions_1 import writers_directors_collaboration_trend, top_directors_by_high_rating_and_votes, correlation_seasons_rating, top_episodes_by_votes_and_rating
+from functions.business_questions_1 import writers_directors_collaboration_trend, top_directors_by_high_rating_and_votes, correlation_seasons_rating, top_episodes_by_votes_and_rating, actors_demography_stats, genre_seasons_influence
 
 def main():
     spark = SparkSession.builder.appName("IMDBAnalysis").getOrCreate()
@@ -12,21 +12,13 @@ def main():
     # for name, df in dataframes.items():
     #     describe_dataframe(df, name)
 
-    print("1. Топ сценаристи-режисери:")
-    collab = writers_directors_collaboration_trend(dataframes)
-    collab.show(truncate=False)
+    print("1. Соціальна демографія акторів (топ-30):")
+    demography = actors_demography_stats(dataframes)
+    demography.show(truncate=False)
 
-    print("2. Режисери з фільмами рейтингом >8 та голосами по роках:")
-    directors_votes = top_directors_by_high_rating_and_votes(dataframes)
-    directors_votes.show(50)
-
-    print("3. Кореляція кількості сезонів із рейтингом:")
-    corr = correlation_seasons_rating(dataframes)
-    corr.show()
-
-    print("4. Топ TV-епізодів за кількістю голосів і рейтингом:")
-    top_eps = top_episodes_by_votes_and_rating(dataframes)
-    top_eps.show(truncate=False)
+    print("2. Вплив жанрового різноманіття на кількість сезонів серіалів:")
+    genre_seasons = genre_seasons_influence(dataframes)
+    genre_seasons.show(truncate=False)
 
     spark.stop()
 
