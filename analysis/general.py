@@ -70,15 +70,4 @@ def describe_dataframe(df, name):
         analyze_string_columns(df, string_cols)
     else:
         print("The table has no text columns for analysis.")
-
-def main():
-    spark = SparkSession.builder.appName("IMDB Dataset Analysis").getOrCreate()
-    datasets = read_data(spark)
-
-    for name, df in datasets.items():
-        describe_dataframe(df, name)
-
-    spark.stop()
-
-if __name__ == "__main__":
-    main()
+        

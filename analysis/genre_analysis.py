@@ -19,6 +19,7 @@ def genre_popularity_trend(dataframes, save_path=".", top_n_regions=5, last_n_ye
     Returns:
         pyspark.sql.DataFrame: A DataFrame showing genres with increasing popularity.
     """
+    os.makedirs(save_path, exist_ok=True)
     current_year = datetime.now().year
     start_year = current_year - last_n_years
 
@@ -98,6 +99,7 @@ def genre_popularity_trend(dataframes, save_path=".", top_n_regions=5, last_n_ye
             f"Genre Popularity Trend (Avg. Votes) - Last {last_n_years} Years", y=1.03
         )
         g.set_axis_labels("Year", "Average Votes")
+        plt.tight_layout()
         plt.savefig(os.path.join(save_path, "genre_votes_trend.png"))
         plt.show()
 
@@ -110,10 +112,11 @@ def genre_popularity_trend(dataframes, save_path=".", top_n_regions=5, last_n_ye
         )
         g.map(sns.lineplot, "startYear", "avg_rating", marker="o")
         g.add_legend()
-        g.figure.suptitle(
+        g.fig.suptitle(
             f"Genre Popularity Trend (Avg. Rating) - Last {last_n_years} Years", y=1.03
         )
         g.set_axis_labels("Year", "Average Rating")
+        plt.tight_layout()
         plt.savefig(os.path.join(save_path, "genre_rating_trend.png"))
         plt.show()
 
@@ -133,6 +136,8 @@ def genre_actor_cyclicality(
         year_range (tuple): Optional tuple of (start_year, end_year) to filter data.
                            If None, analyzes all available years.
     """
+    os.makedirs(save_path, exist_ok=True)
+
     title_basics = dataframes["title.basics"]
     title_principals = dataframes["title.principals"]
     name_basics = dataframes["name.basics"]
@@ -210,8 +215,9 @@ def genre_actor_cyclicality(
         )
         plt.xlabel("Year")
         plt.ylabel("Number of Movies")
-        plt.legend(title="Genre/Region")
+        plt.legend(title="Genre/Region", bbox_to_anchor=(1.05, 1), loc='upper left')
         plt.grid(True)
+        plt.tight_layout()
         plt.savefig(os.path.join(save_path, "genre_cyclicality.png"))
         plt.show()
 
@@ -230,8 +236,9 @@ def genre_actor_cyclicality(
         )
         plt.xlabel("Year")
         plt.ylabel("Number of Movies")
-        plt.legend(title="Actor/Region")
+        plt.legend(title="Actor/Region", bbox_to_anchor=(1.05, 1), loc='upper left')
         plt.grid(True)
+        plt.tight_layout()
         plt.savefig(os.path.join(save_path, "actor_cyclicality.png"))
         plt.show()
 
@@ -246,6 +253,8 @@ def genre_duration_rating_analysis(dataframes, save_path=".", year_range=None):
         year_range (tuple): Optional tuple of (start_year, end_year) to filter data.
                            If None, analyzes all available years.
     """
+    os.makedirs(save_path, exist_ok=True)
+    
     title_basics = dataframes["title.basics"]
     title_ratings = dataframes["title.ratings"]
 

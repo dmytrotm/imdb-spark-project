@@ -1,5 +1,7 @@
 
 import os
+from datetime import datetime
+
 import matplotlib.pyplot as plt
 import seaborn as sns
 from pyspark.sql import functions as F
@@ -17,7 +19,7 @@ def directors_increasing_ratings_trend(dataframes, save_path="."):
         pyspark.sql.DataFrame: A DataFrame showing directors with an increasing ratings trend.
     """
     # Get the current year
-    from datetime import datetime
+    os.makedirs(save_path, exist_ok=True)
     current_year = datetime.now().year
     last_10_years = current_year - 10
 
@@ -93,9 +95,107 @@ def directors_increasing_ratings_trend(dataframes, save_path="."):
     plt.title("Average Film Ratings Trend for Top Directors (Last 10 Years)")
     plt.xlabel("Year")
     plt.ylabel("Average Rating")
-    plt.legend(title="Director")
+    plt.legend(title="Director", bbox_to_anchor=(1.05, 1), loc='upper left')
     plt.grid(True)
+    plt.tight_layout()
     plt.savefig(os.path.join(save_path, "director_ratings_trend.png"))
     plt.show()
 
     return director_trend_count
+
+
+def top_directors_by_high_rating_and_votes(dataframes, save_path="."):
+    os.makedirs(save_path, exist_ok=True)
+    title_crew = dataframes["title.crew"]
+    ratings = dataframes["title.ratings"]
+    basics = dataframes["title.basics"]
+    name_basics = dataframes["name.basics"]
+
+    directors = title_crew.withColumn("nconst", F.explode(F.split(F.col("directors"), ",")))
+
+    directors_rated = directors.join(ratings, "tconst") \
+                               .join(basics.select("tconst", "startYear"), "tconst") \
+                               .join(name_basics.select("nconst", "primaryName"), "nconst")
+
+    directors_rated = directors_rated.filter(F.col("averageRating") > 8)
+
+    yearly_stats = directors_rated.groupBy("primaryName", "startYear").agg(
+        F.count("tconst").alias("num_films"),
+        F.avg("numVotes").alias("avg_votes")
+    ).orderBy("primaryName", "startYear")
+    
+    # Find top directors by total number of high-rated films
+    top_directors_by_count = directors_rated.groupBy("primaryName").count().orderBy(F.desc("count")).limit(10)
+    
+    # Filter yearly stats for top directors
+    top_directors_trends = yearly_stats.join(top_directors_by_count.select("primaryName"), "primaryName")
+    
+    trends_pd = top_directors_trends.toPandas()
+
+    if not trends_pd.empty:
+        plt.figure(figsize=(14, 7))
+        sns.lineplot(data=trends_pd, x="startYear", y="avg_votes", hue="primaryName", marker="o")
+        plt.title("Popularity Trend (Avg. Votes) for Directors with Most High-Rated (>8) Films")
+        plt.xlabel("Year")
+        plt.ylabel("Average Number of Votes")
+        plt.legend(title="Director", bbox_to_anchor=(1.05, 1), loc='upper left')
+        plt.grid(True)
+        plt.tight_layout()
+        plt.savefig(os.path.join(save_path, "top_directors_votes_trend.png"))
+        plt.show()
+
+    return yearly_stats
+
+
+def director_career_span_analysis(dataframes, save_path=".", min_career_length=20, min_film_count=10, num_directors_to_plot=7):
+    """
+    Analyzes the evolution of director ratings over their entire career span.
+    """
+    os.makedirs(save_path, exist_ok=True)
+    title_crew = dataframes["title.crew"]
+    title_basics = dataframes["title.basics"]
+    title_ratings = dataframes["title.ratings"]
+    name_basics = dataframes["name.basics"]
+
+    # Get director films
+    director_films = title_crew.withColumn("nconst", F.explode(F.split(F.col("directors"), ","))) \
+        .join(name_basics.select("nconst", "primaryName"), "nconst") \
+        .join(title_basics.filter(F.col("titleType") == "movie").select("tconst", "startYear"), "tconst")
+
+    # Find first year for each director
+    first_year = director_films.groupBy("primaryName").agg(F.min("startYear").alias("first_film_year"))
+
+    # Calculate career year and join ratings
+    director_career_data = director_films.join(first_year, "primaryName") \
+        .withColumn("career_year", F.col("startYear") - F.col("first_film_year")) \
+        .join(title_ratings, "tconst")
+
+    # Find prolific directors with long careers
+    career_stats = director_career_data.groupBy("primaryName").agg(
+        (F.max("startYear") - F.min("startYear")).alias("career_length"),
+        F.count("tconst").alias("film_count")
+    )
+    
+    prolific_directors = career_stats.filter((F.col("career_length") >= min_career_length) & (F.col("film_count") > min_film_count)) \
+        .orderBy(F.desc("film_count")).limit(num_directors_to_plot)
+
+    # Filter for these directors and get yearly average rating
+    top_directors_career_ratings = director_career_data.join(prolific_directors.select("primaryName"), "primaryName") \
+        .groupBy("primaryName", "career_year") \
+        .agg(F.avg("averageRating").alias("avg_rating")) \
+        .orderBy("primaryName", "career_year")
+
+    # Visualization
+    career_ratings_pd = top_directors_career_ratings.toPandas()
+
+    if not career_ratings_pd.empty:
+        plt.figure(figsize=(15, 8))
+        sns.lineplot(data=career_ratings_pd, x="career_year", y="avg_rating", hue="primaryName", marker="o")
+        plt.title("Rating Evolution Over a Director's Career")
+        plt.xlabel("Years Into Career")
+        plt.ylabel("Average Film Rating")
+        plt.legend(title="Director", bbox_to_anchor=(1.05, 1), loc='upper left')
+        plt.grid(True)
+        plt.tight_layout()
+        plt.savefig(os.path.join(save_path, "director_career_span.png"))
+        plt.show()
