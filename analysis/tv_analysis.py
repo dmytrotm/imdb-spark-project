@@ -100,3 +100,235 @@ def genre_seasons_influence(dataframes, save_path="."):
         plt.show()
 
     return stats
+
+
+def avg_rating_long_series(datasets, save_path=".", min_episodes=50):
+    """
+    Analyzes the average rating of TV series with more than N episodes.
+    Provides insights into audience preferences for long-running series.
+
+    Args:
+        datasets (dict): A dictionary of Spark DataFrames.
+        save_path (str): The path to save the visualizations.
+        min_episodes (int): Minimum number of episodes. Defaults to 50.
+    
+    Returns:
+        pyspark.sql.DataFrame: A DataFrame with average rating statistics for long series.
+    """
+    os.makedirs(save_path, exist_ok=True)
+    
+    print("\n" + "="*80)
+    print(f"BUSINESS QUESTION: Average rating of series with {min_episodes}+ episodes")
+    print("="*80)
+    
+    basics_df = datasets['title.basics']
+    episodes_df = datasets['title.episode']
+    ratings_df = datasets['title.ratings']
+    
+    # Count episodes for each series
+    episode_counts = episodes_df.groupBy("parentTconst") \
+        .agg(F.count("*").alias("episode_count"))
+    
+    # Filter series with more than min_episodes
+    long_series = episode_counts.filter(F.col("episode_count") > min_episodes)
+    
+    # Join with basics to get series information
+    series_info = long_series.join(
+        basics_df.filter(F.col("titleType") == "tvSeries"),
+        long_series.parentTconst == basics_df.tconst,
+        "inner"
+    )
+    
+    # Join with ratings
+    series_with_ratings = series_info.join(
+        ratings_df,
+        series_info.tconst == ratings_df.tconst,
+        "inner"
+    )
+    
+    # Calculate average rating
+    avg_rating = series_with_ratings.agg(
+        F.avg("averageRating").alias("avg_rating"),
+        F.count("*").alias("series_count")
+    )
+    
+    print(f"\nSeries with {min_episodes}+ episodes:")
+    print(f"Series count: {avg_rating.first()['series_count']}")
+    print(f"Average rating: {avg_rating.first()['avg_rating']:.2f}")
+    
+    # Show top-10 long series with highest ratings
+    print("\nTop-10 long series with highest ratings:")
+    top_series = series_with_ratings.select(
+        "primaryTitle", "episode_count", "averageRating", "numVotes"
+    ).orderBy(F.desc("averageRating")).limit(10)
+    top_series.show(truncate=False)
+    
+    # Visualization
+    series_pd = series_with_ratings.select(
+        "primaryTitle", "episode_count", "averageRating", "numVotes"
+    ).orderBy(F.desc("numVotes")).limit(20).toPandas()
+    
+    if not series_pd.empty:
+        fig, axes = plt.subplots(1, 2, figsize=(16, 6))
+        
+        # 1. Rating distribution
+        axes[0].hist(series_pd['averageRating'], bins=20, color='skyblue', edgecolor='black')
+        axes[0].axvline(avg_rating.first()['avg_rating'], color='red', linestyle='--', 
+                       label=f'Average: {avg_rating.first()["avg_rating"]:.2f}')
+        axes[0].set_title(f'Rating Distribution of Series with {min_episodes}+ Episodes')
+        axes[0].set_xlabel('Average Rating')
+        axes[0].set_ylabel('Number of Series')
+        axes[0].legend()
+        axes[0].grid(True, alpha=0.3)
+        
+        # 2. Top 20 series by votes
+        top_20 = series_pd.nsmallest(20, 'numVotes', keep='last')
+        axes[1].barh(range(len(top_20)), top_20['averageRating'])
+        axes[1].set_yticks(range(len(top_20)))
+        axes[1].set_yticklabels(top_20['primaryTitle'], fontsize=8)
+        axes[1].set_title('Top 20 Most Popular Long Series (by votes)')
+        axes[1].set_xlabel('Average Rating')
+        axes[1].grid(True, alpha=0.3, axis='x')
+        
+        plt.tight_layout()
+        plt.savefig(os.path.join(save_path, f"long_series_ratings_{min_episodes}.png"), dpi=300)
+        plt.show()
+    
+    return avg_rating
+
+
+def season_rating_diff(datasets, save_path=".", min_seasons=3):
+    """
+    Analyzes rating differences between consecutive seasons for TV series.
+    Uses window functions to track season-to-season rating dynamics.
+
+    Args:
+        datasets (dict): A dictionary of Spark DataFrames.
+        save_path (str): The path to save the visualizations.
+        min_seasons (int): Minimum number of seasons. Defaults to 3.
+    
+    Returns:
+        pyspark.sql.DataFrame: A DataFrame with season-to-season rating differences and trends.
+    """
+    os.makedirs(save_path, exist_ok=True)
+    
+    print("\n" + "="*80)
+    print(f"BUSINESS QUESTION: Season rating dynamics for series with {min_seasons}+ seasons")
+    print("="*80)
+    
+    episodes_df = datasets['title.episode']
+    ratings_df = datasets['title.ratings']
+    basics_df = datasets['title.basics']
+    
+    # Join episodes with ratings
+    episodes_with_ratings = episodes_df.join(
+        ratings_df,
+        episodes_df.tconst == ratings_df.tconst,
+        "inner"
+    )
+    
+    # Calculate average rating by seasons
+    season_ratings = episodes_with_ratings.groupBy("parentTconst", "seasonNumber") \
+        .agg(F.avg("averageRating").alias("season_avg_rating"))
+    
+    # Count number of seasons
+    season_counts = season_ratings.groupBy("parentTconst") \
+        .agg(F.max("seasonNumber").alias("max_season"))
+    
+    # Filter series with more than min_seasons
+    long_series = season_counts.filter(F.col("max_season") > min_seasons)
+    
+    # Filter ratings only for long series
+    long_series_ratings = season_ratings.join(
+        long_series,
+        "parentTconst",
+        "inner"
+    )
+    
+    # Use window function to get previous season's rating
+    window_spec = Window.partitionBy("parentTconst").orderBy("seasonNumber")
+    
+    ratings_with_prev = long_series_ratings.withColumn(
+        "prev_season_rating",
+        F.lag("season_avg_rating", 1).over(window_spec)
+    ).withColumn(
+        "rating_diff",
+        F.col("season_avg_rating") - F.col("prev_season_rating")
+    )
+    
+    # Add series titles
+    result = ratings_with_prev.join(
+        basics_df.select("tconst", "primaryTitle"),
+        ratings_with_prev.parentTconst == basics_df.tconst,
+        "inner"
+    )
+    
+    print("\nSeries with highest rating growth between seasons:")
+    result.filter(F.col("rating_diff").isNotNull()) \
+        .select("primaryTitle", "seasonNumber", 
+                F.round("season_avg_rating", 2).alias("season_avg_rating"), 
+                F.round("prev_season_rating", 2).alias("prev_season_rating"), 
+                F.round("rating_diff", 2).alias("rating_diff")) \
+        .orderBy(F.desc("rating_diff")) \
+        .limit(10) \
+        .show(truncate=False)
+    
+    print("\nSeries with biggest rating drop between seasons:")
+    result.filter(F.col("rating_diff").isNotNull()) \
+        .select("primaryTitle", "seasonNumber", 
+                F.round("season_avg_rating", 2).alias("season_avg_rating"), 
+                F.round("prev_season_rating", 2).alias("prev_season_rating"), 
+                F.round("rating_diff", 2).alias("rating_diff")) \
+        .orderBy(F.asc("rating_diff")) \
+        .limit(10) \
+        .show(truncate=False)
+    
+    # Visualization
+    result_pd = result.filter(F.col("rating_diff").isNotNull()).toPandas()
+    
+    if not result_pd.empty:
+        fig, axes = plt.subplots(2, 2, figsize=(16, 12))
+        
+        # 1. Distribution of rating differences
+        axes[0, 0].hist(result_pd['rating_diff'], bins=50, color='lightcoral', edgecolor='black')
+        axes[0, 0].axvline(0, color='red', linestyle='--', linewidth=2, label='No change')
+        axes[0, 0].set_title('Distribution of Season-to-Season Rating Changes')
+        axes[0, 0].set_xlabel('Rating Difference')
+        axes[0, 0].set_ylabel('Frequency')
+        axes[0, 0].legend()
+        axes[0, 0].grid(True, alpha=0.3)
+        
+        # 2. Top 10 improvements
+        top_improvements = result_pd.nlargest(10, 'rating_diff')
+        axes[0, 1].barh(range(len(top_improvements)), top_improvements['rating_diff'], color='green')
+        axes[0, 1].set_yticks(range(len(top_improvements)))
+        axes[0, 1].set_yticklabels([f"{row['primaryTitle'][:30]} (S{int(row['seasonNumber'])})" 
+                                    for _, row in top_improvements.iterrows()], fontsize=8)
+        axes[0, 1].set_title('Top 10 Season Rating Improvements')
+        axes[0, 1].set_xlabel('Rating Increase')
+        axes[0, 1].grid(True, alpha=0.3, axis='x')
+        
+        # 3. Top 10 declines
+        top_declines = result_pd.nsmallest(10, 'rating_diff')
+        axes[1, 0].barh(range(len(top_declines)), top_declines['rating_diff'], color='red')
+        axes[1, 0].set_yticks(range(len(top_declines)))
+        axes[1, 0].set_yticklabels([f"{row['primaryTitle'][:30]} (S{int(row['seasonNumber'])})" 
+                                   for _, row in top_declines.iterrows()], fontsize=8)
+        axes[1, 0].set_title('Top 10 Season Rating Declines')
+        axes[1, 0].set_xlabel('Rating Decrease')
+        axes[1, 0].grid(True, alpha=0.3, axis='x')
+        
+        # 4. Average rating by season number
+        season_avg = result_pd.groupby('seasonNumber')['season_avg_rating'].mean().reset_index()
+        axes[1, 1].plot(season_avg['seasonNumber'], season_avg['season_avg_rating'], 
+                       marker='o', linewidth=2, markersize=8)
+        axes[1, 1].set_title('Average Rating by Season Number')
+        axes[1, 1].set_xlabel('Season Number')
+        axes[1, 1].set_ylabel('Average Rating')
+        axes[1, 1].grid(True, alpha=0.3)
+        
+        plt.tight_layout()
+        plt.savefig(os.path.join(save_path, f"season_rating_trends_{min_seasons}.png"), dpi=300)
+        plt.show()
+    
+    return result

@@ -6,6 +6,8 @@ from analysis import (
     genre_popularity_trend,
     genre_actor_cyclicality,
     genre_duration_rating_analysis,
+    genre_evolution_analysis,
+    genre_combinations_analysis,
     writer_director_collaboration,
     actor_director_collaboration,
     top_directors_by_high_rating_and_votes,
@@ -13,7 +15,11 @@ from analysis import (
     correlation_seasons_rating,
     top_episodes_by_votes_and_rating,
     genre_seasons_influence,
-    actors_demography_stats
+    avg_rating_long_series,
+    season_rating_diff,
+    actors_demography_stats,
+    avg_rating_by_actor,
+    young_actors_2000s
 )
 
 def main():
@@ -34,8 +40,29 @@ def main():
     print("Running Analyses")
     print("="*50)
     
-    print("\nAnalyzing writer-director collaborations...")
-    writer_director_collaboration(dataframes, save_path="visualizations")
+
+    
+    # print("\nAnalyzing genre evolution (before/after 2010)...")
+    # genre_evolution_analysis(dataframes, save_path="visualizations")
+    
+    # print("\nAnalyzing average rating of long series (50+ episodes)...")
+    # avg_rating_long_series(dataframes, save_path="visualizations")
+    
+    # print("\nAnalyzing season rating differences...")
+    # season_rating_diff(dataframes, save_path="visualizations")
+    
+    # print("\nAnalyzing actors with highest average ratings...")
+    # avg_rating_by_actor(dataframes, save_path="visualizations")
+    
+    # print("\nAnalyzing young actors age distribution...")
+    # young_actors_2000s(dataframes, save_path="visualizations")
+    
+    # print("\nAnalyzing genre combinations and their success...")
+    # genre_combinations_analysis(dataframes, save_path="visualizations")
+
+    
+    # print("\nAnalyzing writer-director collaborations...")
+    # writer_director_collaboration(dataframes, save_path="visualizations")
     
     # print("\nAnalyzing actor-director collaborations...")
     # actor_director_collaboration(dataframes, save_path="visualizations")
