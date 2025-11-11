@@ -64,6 +64,30 @@ This document outlines the different data analyses implemented in this project.
 - **Business Question:** Does the length of a film impact its critical success within different genres?
 - **Description:** Examines the average film duration (runtime) for different genres and analyzes its correlation with the average rating.
 
+### 4. Genre Evolution Analysis
+- **Function:** `genre_evolution_analysis`
+- **Business Question:** How have genre preferences evolved - which genres gained or lost popularity after 2010 compared to the decade before?
+- **Description:** Identifies shifting audience preferences and market trends by comparing genre performance before and after 2010. This helps studios and investors understand:
+  - Which genres are rising (emerging opportunities)
+  - Which genres are declining (saturated markets)
+  - Changes in audience quality expectations
+  - ROI shifts per genre
+- **Metrics:** Film volume growth %, rating quality change, engagement growth %, momentum score (composite)
+- **Visualization:** 7 charts including momentum ranking, before/after comparisons, scatter plot of quality vs popularity evolution
+- **Unique value:** Comparative analysis that reveals market evolution trends, not just current popularity snapshots
+
+### 5. Genre Combinations Analysis
+- **Function:** `genre_combinations_analysis`
+- **Business Question:** Which combinations of genres are most successful and popular? What genre pairings lead to the highest ratings and audience engagement?
+- **Description:** Analyzes multi-genre films to identify which genre combinations work best together. This information is valuable for:
+  - Producers planning new projects and deciding on genre mix
+  - Investors evaluating project proposals based on genre combination track record
+  - Studios understanding which creative blends resonate with audiences
+  - Marketing teams positioning films based on proven successful combinations
+- **Metrics:** Average rating per combination, total votes, engagement score (rating × log(votes)), film count
+- **Visualization:** 6 charts including top combinations by rating, popularity, engagement score, scatter plot of quality vs volume, and frequency analysis
+- **Unique value:** First analysis to systematically examine genre synergies rather than individual genres, revealing which creative combinations maximize both critical and commercial success
+
 ---
 
 ## TV Series Analysis
@@ -80,9 +104,19 @@ This document outlines the different data analyses implemented in this project.
 - **Description:** Identifies the most popular individual TV episodes based on the total number of votes they have received.
 
 ### 3. Genre Influence on Seasons
--_Function:** `genre_seasons_influence`
+- **Function:** `genre_seasons_influence`
 - **Business Question:** Do certain genres tend to produce longer-running series?
 - **Description:** Analyzes how the genre of a TV series influences the number of seasons it has.
+
+### 4. Average Rating of Long Series
+- **Function:** `avg_rating_long_series`
+- **Business Question:** What is the average rating of TV series with more than 50 episodes?
+- **Description:** Provides insight into how audiences rate long-running TV series. This is important for TV networks and streaming services to evaluate project success and make decisions about extending series or creating new similar formats.
+
+### 5. Season Rating Differences
+- **Function:** `season_rating_diff`
+- **Business Question:** For each TV series with more than 3 seasons, determine the difference in average rating between the current season and the previous one.
+- **Description:** Tracks the dynamics of audience rating changes from season to season. Rating growth may indicate quality improvement or audience growth, decline - loss of interest. This information is critical for showrunners, writers, and producers to adjust the production process. Uses window functions (lag) to compare consecutive seasons.
 
 ---
 
@@ -93,3 +127,13 @@ This document outlines the different data analyses implemented in this project.
 - **Function:** `actors_demography_stats`
 - **Business Question:** What is the profile of the most active and successful actors?
 - **Description:** Calculates demographic and career statistics for actors, including their age, the number of titles they have appeared in, and their average film rating.
+
+### 2. Average Rating by Actor
+- **Function:** `avg_rating_by_actor`
+- **Business Question:** For each actor who appeared in at least 10 films, what is the average rating of those films?
+- **Description:** Identifies actors whose participation is statistically associated with high film ratings. This information is valuable for casting directors, producers, and directors when choosing actors for new projects, as well as for actors' agents for positioning their clients.
+
+### 3. Young Actors Age Distribution
+- **Function:** `young_actors_2000s`
+- **Business Question:** What is the distribution of actors by age groups in films from the last 5 years?
+- **Description:** Identifies which age groups of actors are most in demand in modern cinema. This helps casting directors and producers understand trends, studios plan projects for target audiences, and agents position their clients. Age groups: 18-25 (Youth), 26-35 (Prime), 36-45 (Mature), 46-55 (Experienced), 56+ (Veterans).
