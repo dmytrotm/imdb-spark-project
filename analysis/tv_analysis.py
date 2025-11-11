@@ -332,3 +332,121 @@ def season_rating_diff(datasets, save_path=".", min_seasons=3):
         plt.show()
     
     return result
+
+
+def hook_shows(dataframes, save_path="."):
+    """
+    Визначення серіалів, у яких рейтинг фіналу сезону 1 > рейтингу пілота.
+    (Серіали, що "зачепили" глядача )
+    """
+
+    os.makedirs(save_path, exist_ok=True)
+
+    basics = dataframes["title.basics"]
+    episodes = dataframes["title.episode"]
+    ratings = dataframes["title.ratings"]
+    akas = dataframes["title.akas"]
+
+    series = basics.filter(F.col("titleType") == "tvSeries").select("tconst", "primaryTitle")
+
+    season1_eps = episodes.filter(F.col("seasonNumber") == 1).select("tconst", "parentTconst", "episodeNumber")
+
+    eps_with_ratings = season1_eps.join(ratings, "tconst")
+
+    agg = eps_with_ratings.groupBy("parentTconst").agg(
+        F.first("averageRating").alias("first_rating"),
+        F.last("averageRating").alias("last_rating"),
+        F.min("episodeNumber").alias("first_ep"),
+        F.max("episodeNumber").alias("last_ep"),
+    )
+
+    agg = agg.withColumn("delta_rating", F.col("last_rating") - F.col("first_rating"))
+
+    growing = agg.filter(F.col("delta_rating") > 0)
+
+    result = growing.join(series, series["tconst"] == growing["parentTconst"]) \
+                    .select("primaryTitle", "first_rating", "last_rating", "delta_rating") \
+                    .orderBy(F.desc("delta_rating"))
+
+    result_pd = result.limit(20).toPandas()  
+
+    if not result_pd.empty:
+        plt.figure(figsize=(12, 6))
+        sns.barplot(data=result_pd, x="primaryTitle", y="delta_rating")
+        plt.title("Top 20 'Hook' TV Series — Growth in Rating (Season 1)")
+        plt.xlabel("TV Series")
+        plt.ylabel("Rating Growth (Final - Pilot)")
+        plt.xticks(rotation=45, ha='right')
+        plt.tight_layout()
+        plt.savefig(os.path.join(save_path, "hook_shows.png"))
+        plt.show()
+
+    return result
+
+
+def sophomore_slump(dataframes, save_path="."):
+    """
+    Аналіз "синдрому другого сезону":
+    середня зміна рейтингу між фіналом 1-го та 2-го сезонів для серіалів із 3+ сезонами.
+    """
+
+    os.makedirs(save_path, exist_ok=True)
+
+    basics = dataframes["title.basics"]
+    episodes = dataframes["title.episode"]
+    ratings = dataframes["title.ratings"]
+
+    eps = episodes.filter(
+        F.col("seasonNumber").isNotNull() &
+        F.col("episodeNumber").isNotNull()
+    ).select("tconst", "parentTconst", "seasonNumber", "episodeNumber")
+
+    eps = eps.join(ratings.select("tconst", "averageRating"), "tconst")
+
+    w = Window.partitionBy("parentTconst", "seasonNumber")
+    season_finals = eps.withColumn("max_ep", F.max("episodeNumber").over(w)) \
+                       .filter(F.col("episodeNumber") == F.col("max_ep")) \
+                       .select("parentTconst", "seasonNumber", "averageRating")
+
+    valid_series = season_finals.groupBy("parentTconst") \
+                                .agg(F.countDistinct("seasonNumber").alias("num_seasons")) \
+                                .filter(F.col("num_seasons") >= 3)
+
+    season_finals = season_finals.join(valid_series, "parentTconst")
+
+    season_subset = season_finals.filter(F.col("seasonNumber").isin([1, 2]))
+
+    pivoted = season_subset.groupBy("parentTconst").pivot("seasonNumber").agg(F.first("averageRating")) \
+                           .withColumnRenamed("1", "rating_s1_final") \
+                           .withColumnRenamed("2", "rating_s2_final")
+
+    diff = pivoted.withColumn("delta", F.col("rating_s2_final") - F.col("rating_s1_final"))
+
+    result = diff.join(
+        basics.select("tconst", "primaryTitle", "genres"),
+        diff["parentTconst"] == basics["tconst"],
+        "left"
+    ).select("primaryTitle", "genres", "rating_s1_final", "rating_s2_final", "delta")
+
+    genre_stats = result.withColumn("main_genre", F.split(F.col("genres"), ",")[0]) \
+                        .groupBy("main_genre") \
+                        .agg(F.avg("delta").alias("avg_delta"),
+                             F.count("primaryTitle").alias("num_series")) \
+                        .filter(F.col("num_series") >= 5) \
+                        .orderBy("avg_delta")
+
+    genre_pd = genre_stats.toPandas()
+
+    if not genre_pd.empty:
+        plt.figure(figsize=(12, 6))
+        sns.barplot(data=genre_pd, x="main_genre", y="avg_delta", palette="coolwarm")
+        plt.title("'Синдром другого сезону' — середня зміна рейтингу між 1 і 2 сезоном")
+        plt.xlabel("Жанр")
+        plt.ylabel("Δ рейтинг (2 сезон - 1 сезон)")
+        plt.axhline(0, color='gray', linestyle='--', alpha=0.7)
+        plt.xticks(rotation=45, ha='right')
+        plt.tight_layout()
+        plt.savefig(os.path.join(save_path, "sophomore_slump.png"))
+        plt.show()
+
+    return result, genre_stats

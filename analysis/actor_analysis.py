@@ -2,7 +2,7 @@ import os
 import matplotlib.pyplot as plt
 import seaborn as sns
 from pyspark.sql import functions as F
-
+from pyspark.sql import Window
 
 def actors_demography_stats(dataframes, save_path="."):
     """
@@ -325,3 +325,133 @@ def young_actors_2000s(datasets, save_path=".", years_back=5):
         plt.show()
     
     return age_distribution
+
+
+def rising_stars(dataframes, save_path="."):
+    """
+    10 акторів із найшвидшим зростанням попиту (velocity росту голосів за фільми за 5 років)
+    """
+
+    os.makedirs(save_path, exist_ok=True)
+
+    name_basics = dataframes["name.basics"]
+    principals = dataframes["title.principals"]
+    ratings = dataframes["title.ratings"]
+    akas = dataframes["title.akas"]
+    basics = dataframes["title.basics"]
+
+    actors = principals.filter(F.col("category").isin(["actor", "actress"]))
+
+  
+    works = actors.join(basics.select("tconst", "startYear"), "tconst") \
+                  .join(ratings.select("tconst", "numVotes"), "tconst") \
+                  .filter((F.col("startYear") >= F.lit(2018)) & (F.col("startYear") <= F.lit(2023)))
+
+    votes_by_year = works.groupBy("nconst", "startYear") \
+                         .agg(F.avg("numVotes").alias("avg_votes"))
+
+   
+    window_count_years = Window.partitionBy("nconst")
+    votes_by_year_filtered = votes_by_year.withColumn("num_years", F.count("*").over(window_count_years)) \
+                                          .filter(F.col("num_years") > 1) \
+                                          .select("nconst", "startYear", "avg_votes") # Прибираємо зайвий стовпець
+
+    
+    
+    w = Window.partitionBy("nconst").orderBy("startYear")
+    votes_enriched = votes_by_year_filtered.withColumn("prev_avg", F.lag("avg_votes").over(w))
+    votes_enriched = votes_enriched.withColumn("velocity", F.col("avg_votes") - F.col("prev_avg"))
+
+    actor_velocity = votes_enriched.groupBy("nconst") \
+        .agg(F.avg("velocity").alias("avg_velocity")) \
+        .filter(F.col("avg_velocity") > 0) \
+        .orderBy(F.desc("avg_velocity")) \
+        .limit(10)
+
+    result = actor_velocity.join(name_basics.select("nconst", "primaryName"), "nconst")
+
+    
+    result_pd = result.toPandas()
+
+    if not result_pd.empty:
+        result_pd = result_pd.sort_values('avg_velocity', ascending=False)
+        plt.figure(figsize=(12, 6))
+        sns.barplot(data=result_pd, x="primaryName", y="avg_velocity")
+        plt.title("Top 10 Rising Actors (Velocity of Demand Growth)")
+        plt.xlabel("Actor")
+        plt.ylabel("Avg Vote Growth per Year")
+        plt.xticks(rotation=45, ha='right')
+        plt.tight_layout()
+        plt.savefig(os.path.join(save_path, "rising_stars.png"))
+        plt.show()
+
+    return result
+
+
+
+def fading_stars(dataframes, save_path="."):
+    """
+    Аналіз 'згасаючих зірок':
+    режисери або актори, які мали середній рейтинг >7.5 у 2000-х,
+    але <5.5 у 2020-х.
+    """
+
+    os.makedirs(save_path, exist_ok=True)
+
+    name_basics = dataframes["name.basics"]
+    principals = dataframes["title.principals"]
+    ratings = dataframes["title.ratings"]
+    basics = dataframes["title.basics"]
+
+    people = principals.filter(
+        F.col("category").isin(["actor", "actress", "director"])
+    ).select("tconst", "nconst", "category")
+
+    joined = people.join(basics.select("tconst", "startYear"), "tconst") \
+                   .join(ratings.select("tconst", "averageRating"), "tconst") \
+                   .filter(F.col("startYear").isNotNull())
+
+    joined = joined.withColumn(
+        "decade",
+        (F.col("startYear") / 10).cast("int") * 10
+    )
+
+    avg_by_decade = joined.groupBy("nconst", "category", "decade") \
+                          .agg(F.avg("averageRating").alias("avg_rating"))
+
+    decade_pivot = avg_by_decade.groupBy("nconst", "category").pivot("decade").agg(F.first("avg_rating"))
+
+    decade_filtered = decade_pivot.filter(
+        F.col("2000").isNotNull() & F.col("2020").isNotNull()
+    )
+
+    fading = decade_filtered.filter(
+        (F.col("2000") > 7.5) & (F.col("2020") < 5.5)
+    )
+
+    result = fading.join(name_basics.select("nconst", "primaryName"), "nconst") \
+                   .select("primaryName", "category", "2000", "2020") \
+                   .orderBy(F.asc("2020"))
+
+    result_pd = result.limit(20).toPandas()
+
+    if not result_pd.empty:
+        plt.figure(figsize=(12, 6))
+        sns.scatterplot(
+            data=result_pd,
+            x="2000", y="2020",
+            hue="category",
+            s=100
+        )
+        for _, row in result_pd.iterrows():
+            plt.text(row["2000"] + 0.02, row["2020"] - 0.05, row["primaryName"], fontsize=9)
+        plt.title("'Згасаючі зірки' — падіння середнього рейтингу між 2000-ми і 2020-ми")
+        plt.xlabel("Середній рейтинг у 2000-х")
+        plt.ylabel("Середній рейтинг у 2020-х")
+        plt.axhline(5.5, color="r", linestyle="--", alpha=0.5)
+        plt.axvline(7.5, color="g", linestyle="--", alpha=0.5)
+        plt.tight_layout()
+        plt.savefig(os.path.join(save_path, "fading_stars.png"))
+        plt.show()
+
+    return result
