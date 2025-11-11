@@ -2,3 +2,8 @@ __pycache__
 *env*
 .idea
 .DS_Store
+
+# Згенеровані візуалізації
+visualization/*.png
+visualization/*.jpg
+visualization/*.pdf

@@ -7,3 +7,4 @@ services:
     volumes:
       - .:/app
       - ../data:/data
+      - ./visualization:/app/visualization
