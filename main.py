@@ -19,7 +19,13 @@ from analysis import (
     season_rating_diff,
     actors_demography_stats,
     avg_rating_by_actor,
-    young_actors_2000s
+    young_actors_2000s,
+    fading_stars, 
+    rising_stars,
+    underrated_genre_combos,
+    hook_shows, 
+    sophomore_slump,
+    localization_gaps
 )
 
 def main():
@@ -96,6 +102,25 @@ def main():
 
     # print("\nAnalyzing actor demographics and career statistics...")
     # actors_demography_stats(dataframes, save_path="visualizations")
+    print("\nAnalyzing rising stars...")
+    rising_stars(dataframes=dataframes,save_path="visualizations")
+    
+    print("\nAnalyzing hook shows...")
+    hook_shows(dataframes=dataframes,save_path="visualizations")
+    
+    print("\nAnalyzing localization gaps...")
+    localization_gaps(dataframes=dataframes,save_path="visualizations")
+    
+    print("\nAnalyzing fading stars...")
+    fading_stars(dataframes=dataframes,save_path="visualizations")
+    
+    print("\nAnalyzing underrated genre combos...")
+    underrated_genre_combos(dataframes=dataframes,save_path="visualizations")
+    
+    print("\nAnalyzing sophomore slump...")
+    sophomore_slump(dataframes=dataframes,save_path="visualizations")
+
+
 
     # print("\n" + "="*50)
     # print("All analyses complete. Visualizations saved to 'visualizations' directory.")

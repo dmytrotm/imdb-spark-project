@@ -750,3 +750,57 @@ def genre_combinations_analysis(datasets, save_path=".", min_films=50, top_n=15)
     print("="*80 + "\n")
     
     return combo_stats.orderBy(F.desc('engagement_score'))
+
+
+def underrated_genre_combos(dataframes, save_path="."):
+    """
+    Визначає комбінації 2–3 жанрів із високим середнім рейтингом,
+    але малою кількістю фільмів (<200).
+    """
+
+    os.makedirs(save_path, exist_ok=True)
+
+    basics = dataframes["title.basics"]
+    ratings = dataframes["title.ratings"]
+
+    films = basics.filter(
+        (F.col("titleType") == "movie") & 
+        (F.col("genres").isNotNull())
+    ).select("tconst", "genres")
+
+    joined = films.join(ratings, "tconst")
+
+    joined = joined.withColumn("genre_count", F.size(F.split(F.col("genres"), ",")))
+    combos = joined.filter((F.col("genre_count") >= 2) & (F.col("genre_count") <= 3))
+
+    combos = combos.withColumn(
+        "sorted_genres",
+        F.concat_ws(",", F.array_sort(F.split(F.col("genres"), ",")))
+    )
+
+    stats = combos.groupBy("sorted_genres").agg(
+        F.avg("averageRating").alias("avg_rating"),
+        F.count("tconst").alias("film_count")
+    )
+
+    rare = stats.filter(F.col("film_count") < 200)
+
+    top_combos = rare.orderBy(F.desc("avg_rating"))
+
+    result_pd = top_combos.limit(20).toPandas()
+
+    if not result_pd.empty:
+        plt.figure(figsize=(12, 6))
+        sns.barplot(
+            data=result_pd,
+            x="sorted_genres", y="avg_rating", palette="viridis"
+        )
+        plt.title("Топ-20 недооцінених комбінацій жанрів (<200 фільмів)")
+        plt.xlabel("Комбінація жанрів")
+        plt.ylabel("Середній рейтинг")
+        plt.xticks(rotation=45, ha='right')
+        plt.tight_layout()
+        plt.savefig(os.path.join(save_path, "underrated_genre_combos.png"))
+        plt.show()
+
+    return top_combos
