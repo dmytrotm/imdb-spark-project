@@ -95,12 +95,14 @@ def genre_popularity_trend(dataframes, save_path=".", top_n_regions=5, last_n_ye
         )
         g.map(sns.lineplot, "startYear", "avg_votes", marker="o")
         g.add_legend()
+        if g._legend:
+            g._legend.set_bbox_to_anchor((1.05, 0.5))
+            g._legend.set_loc("center left")
         g.fig.suptitle(
             f"Genre Popularity Trend (Avg. Votes) - Last {last_n_years} Years", y=1.03
         )
         g.set_axis_labels("Year", "Average Votes")
-        plt.tight_layout()
-        plt.savefig(os.path.join(save_path, "genre_votes_trend.png"))
+        plt.savefig(os.path.join(save_path, "genre_votes_trend.png"), bbox_inches='tight')
         plt.show()
 
         g = sns.FacetGrid(
@@ -112,29 +114,33 @@ def genre_popularity_trend(dataframes, save_path=".", top_n_regions=5, last_n_ye
         )
         g.map(sns.lineplot, "startYear", "avg_rating", marker="o")
         g.add_legend()
+        if g._legend:
+            g._legend.set_bbox_to_anchor((1.05, 0.5))
+            g._legend.set_loc("center left")
         g.fig.suptitle(
             f"Genre Popularity Trend (Avg. Rating) - Last {last_n_years} Years", y=1.03
         )
         g.set_axis_labels("Year", "Average Rating")
-        plt.tight_layout()
-        plt.savefig(os.path.join(save_path, "genre_rating_trend.png"))
+        plt.savefig(os.path.join(save_path, "genre_rating_trend.png"), bbox_inches='tight')
         plt.show()
 
     return increasing_genres
 
 
 def genre_actor_cyclicality(
-    dataframes, save_path=".", top_n_regions=5, year_range=None
+    dataframes, save_path=".", top_n_regions=5, year_range=None, step=10
 ):
     """
-    Analyzes the cyclicality in the popularity of genres and actors in different countries.
+    Analyzes the cyclicality in the popularity of genres and actors in different countries
+    by showing the top actor and genre for each time window in each region.
 
     Args:
         dataframes (dict): A dictionary of Spark DataFrames.
         save_path (str): The path to save the visualizations.
-        top_n_regions (int): Number of top regions to analyze. Defaults to 5.
+        top_n_regions (int): Number of top regions to analyze.
         year_range (tuple): Optional tuple of (start_year, end_year) to filter data.
                            If None, analyzes all available years.
+        step (int): The size of the time window in years (e.g., 10 for decades).
     """
     os.makedirs(save_path, exist_ok=True)
 
@@ -145,15 +151,19 @@ def genre_actor_cyclicality(
 
     movies = title_basics.filter(F.col("titleType") == "movie")
 
-    # Apply year filter if specified
+    # Determine year range if not provided
     if year_range:
         start_year, end_year = year_range
-        movies = movies.filter(
-            (F.col("startYear") >= start_year) & (F.col("startYear") <= end_year)
-        )
-        print(f"Analyzing movies from {start_year} to {end_year}")
     else:
-        print("Analyzing movies from all available years")
+        year_stats = movies.agg(F.min("startYear").alias("min_year"), F.max("startYear").alias("max_year")).first()
+        if not year_stats or not year_stats["min_year"] or not year_stats["max_year"]:
+            print("Could not determine year range from data. Skipping analysis.")
+            return
+        start_year, end_year = year_stats["min_year"], year_stats["max_year"]
+    
+    print(f"Analyzing movies from {start_year} to {end_year} in {step}-year steps.")
+
+    movies = movies.filter((F.col("startYear") >= start_year) & (F.col("startYear") <= end_year))
 
     movie_actors = movies.join(title_principals, "tconst").filter(
         F.col("category").isin(["actor", "actress"])
@@ -163,83 +173,96 @@ def genre_actor_cyclicality(
         title_akas, movie_actors_names.tconst == title_akas.titleId
     ).filter(F.col("region") != "\\N")
 
-    # Calculate top regions by number of actor appearances
-    region_counts = (
-        movie_actors_regions.groupBy("region")
-        .count()
-        .orderBy(F.col("count").desc())
-        .limit(top_n_regions)
-    )
-
+    # Calculate top regions
+    region_counts = movie_actors_regions.groupBy("region").count().orderBy(F.desc("count")).limit(top_n_regions)
     top_regions = [row.region for row in region_counts.collect()]
-
     print(f"Analyzing top {len(top_regions)} regions: {', '.join(top_regions)}")
 
-    genre_popularity = (
-        movie_actors_regions.withColumn(
-            "genre", F.explode(F.split(F.col("genres"), ","))
-        )
-        .groupBy("region", "genre", "startYear")
-        .count()
-        .orderBy("count", ascending=False)
-    )
+    # Filter for top regions and create time window column
+    regional_data = movie_actors_regions.filter(F.col("region").isin(top_regions)) \
+        .withColumn("time_window", (F.floor((F.col("startYear") - start_year) / step) * step) + start_year)
 
-    actor_popularity = (
-        movie_actors_regions.groupBy("region", "primaryName", "startYear")
-        .count()
-        .orderBy("count", ascending=False)
-    )
+    # --- Actor Analysis ---
+    actor_popularity = regional_data.groupBy("time_window", "region", "primaryName").count()
+    window_actor = Window.partitionBy("time_window", "region").orderBy(F.desc("count"))
+    top_actor_per_window = actor_popularity.withColumn("rank", F.rank().over(window_actor)) \
+        .filter(F.col("rank") == 1) \
+        .orderBy("time_window", "region")
 
-    top_genres_pd = (
-        genre_popularity.filter(F.col("region").isin(top_regions)).limit(20).toPandas()
-    )
-    top_actors_pd = (
-        actor_popularity.filter(F.col("region").isin(top_regions)).limit(20).toPandas()
-    )
-
-    # Add year range to title if specified
-    year_suffix = f" ({year_range[0]}-{year_range[1]})" if year_range else ""
-
-    if not top_genres_pd.empty:
-        plt.figure(figsize=(14, 7))
-        sns.lineplot(
-            data=top_genres_pd,
-            x="startYear",
-            y="count",
-            hue="genre",
-            style="region",
-            marker="o",
-        )
-        plt.title(
-            f"Cyclicality of Genre Popularity in Different Countries{year_suffix}"
-        )
-        plt.xlabel("Year")
-        plt.ylabel("Number of Movies")
-        plt.legend(title="Genre/Region", bbox_to_anchor=(1.05, 1), loc='upper left')
-        plt.grid(True)
-        plt.tight_layout()
-        plt.savefig(os.path.join(save_path, "genre_cyclicality.png"))
-        plt.show()
+    top_actors_pd = top_actor_per_window.toPandas()
 
     if not top_actors_pd.empty:
-        plt.figure(figsize=(14, 7))
-        sns.lineplot(
-            data=top_actors_pd,
-            x="startYear",
-            y="count",
-            hue="primaryName",
-            style="region",
-            marker="o",
-        )
-        plt.title(
-            f"Cyclicality of Actor Popularity in Different Countries{year_suffix}"
-        )
-        plt.xlabel("Year")
-        plt.ylabel("Number of Movies")
-        plt.legend(title="Actor/Region", bbox_to_anchor=(1.05, 1), loc='upper left')
-        plt.grid(True)
+        fig, ax = plt.subplots(figsize=(18, 10))
+        sns.barplot(data=top_actors_pd, x='time_window', y='count', hue='region', ax=ax)
+
+        # --- Robust Annotation Logic ---
+        name_lookup = top_actors_pd.set_index(['time_window', 'region'])['primaryName'].to_dict()
+        legend = ax.get_legend()
+        color_to_hue = {h.get_facecolor(): l.get_text() for h, l in zip(legend.get_patches(), legend.get_texts())}
+        x_labels = sorted(top_actors_pd['time_window'].unique())
+
+        for bar in ax.patches:
+            if bar.get_height() > 0:
+                x_center = bar.get_x() + bar.get_width() / 2
+                x_index = int(round(x_center))
+                
+                if x_index < len(x_labels):
+                    x_val = x_labels[x_index]
+                    hue_val = color_to_hue.get(bar.get_facecolor())
+
+                    if hue_val:
+                        actor_name = name_lookup.get((x_val, hue_val), '')
+                        ax.text(x_center, bar.get_height() / 2, actor_name,
+                                ha='center', va='center', rotation=90, color='white', fontsize=10)
+
+        ax.set_title(f"Top Actor's Movie Count per {step}-Year Window", fontsize=16)
+        ax.set_xlabel(f"{step}-Year Window", fontsize=12)
+        ax.set_ylabel("Number of Movies", fontsize=12)
+        plt.xticks(rotation=45)
         plt.tight_layout()
-        plt.savefig(os.path.join(save_path, "actor_cyclicality.png"))
+        plt.savefig(os.path.join(save_path, "actor_cyclicality_grouped.png"), bbox_inches='tight')
+        plt.show()
+
+    # --- Genre Analysis ---
+    genre_popularity = regional_data.withColumn("genre", F.explode(F.split(F.col("genres"), ","))) \
+        .groupBy("time_window", "region", "genre").count()
+    window_genre = Window.partitionBy("time_window", "region").orderBy(F.desc("count"))
+    top_genre_per_window = genre_popularity.withColumn("rank", F.rank().over(window_genre)) \
+        .filter(F.col("rank") == 1) \
+        .orderBy("time_window", "region")
+
+    top_genres_pd = top_genre_per_window.toPandas()
+
+    if not top_genres_pd.empty:
+        fig, ax = plt.subplots(figsize=(18, 10))
+        sns.barplot(data=top_genres_pd, x='time_window', y='count', hue='region', ax=ax)
+
+        # --- Robust Annotation Logic ---
+        name_lookup = top_genres_pd.set_index(['time_window', 'region'])['genre'].to_dict()
+        legend = ax.get_legend()
+        color_to_hue = {h.get_facecolor(): l.get_text() for h, l in zip(legend.get_patches(), legend.get_texts())}
+        x_labels = sorted(top_genres_pd['time_window'].unique())
+
+        for bar in ax.patches:
+            if bar.get_height() > 0:
+                x_center = bar.get_x() + bar.get_width() / 2
+                x_index = int(round(x_center))
+
+                if x_index < len(x_labels):
+                    x_val = x_labels[x_index]
+                    hue_val = color_to_hue.get(bar.get_facecolor())
+
+                    if hue_val:
+                        genre_name = name_lookup.get((x_val, hue_val), '')
+                        ax.text(x_center, bar.get_height() / 2, genre_name,
+                                ha='center', va='center', rotation=90, color='white', fontsize=10)
+
+        ax.set_title(f"Top Genre's Movie Count per {step}-Year Window", fontsize=16)
+        ax.set_xlabel(f"{step}-Year Window", fontsize=12)
+        ax.set_ylabel("Number of Movies", fontsize=12)
+        plt.xticks(rotation=45)
+        plt.tight_layout()
+        plt.savefig(os.path.join(save_path, "genre_cyclicality_grouped.png"), bbox_inches='tight')
         plt.show()
 
 
@@ -278,6 +301,7 @@ def genre_duration_rating_analysis(dataframes, save_path=".", year_range=None):
         movies_with_ratings.withColumn(
             "genre", F.explode(F.split(F.col("genres"), ","))
         )
+        .filter(F.col("genre") != "\\N")
         .groupBy("genre")
         .agg(
             F.avg("runtimeMinutes").alias("avg_runtime"),
@@ -305,12 +329,10 @@ def genre_duration_rating_analysis(dataframes, save_path=".", year_range=None):
         plt.ylabel("Average Rating")
         plt.legend(bbox_to_anchor=(1.05, 1), loc="upper left")
         plt.grid(True)
-        plt.tight_layout()
-        plt.savefig(os.path.join(save_path, "genre_duration_rating.png"))
+        plt.savefig(os.path.join(save_path, "genre_duration_rating.png"), bbox_inches='tight')
         plt.show()
 
     return genre_analysis
-
 
 def genre_evolution_analysis(datasets, save_path=".", split_year=2010, min_films=100):
     """

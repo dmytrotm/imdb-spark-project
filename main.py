@@ -41,10 +41,12 @@ def main():
     # for name, df in dataframes.items():
     #     describe_dataframe(df, name)
 
+    visualization_path = "visualizations"
+
     # --- Run All Analyses ---
-    print("\n" + "="*50)
-    print("Running Analyses")
-    print("="*50)
+    # print("\n" + "="*50)
+    # print("Running Analyses")
+    # print("="*50)
     
 
     
@@ -71,34 +73,34 @@ def main():
     # writer_director_collaboration(dataframes, save_path="visualizations")
     
     # print("\nAnalyzing actor-director collaborations...")
-    # actor_director_collaboration(dataframes, save_path="visualizations")
+    # actor_director_collaboration(dataframes, save_path=visualization_path)
 
     # print("\nAnalyzing directors with increasing ratings trend...")
-    # directors_increasing_ratings_trend(dataframes, save_path="visualizations")
+    # directors_increasing_ratings_trend(dataframes, save_path=visualization_path)
     
     # print("\nAnalyzing director career spans...")
-    # director_career_span_analysis(dataframes, save_path="visualizations")
+    # director_career_span_analysis(dataframes, save_path=visualization_path)
     
     # print("\nAnalyzing top directors by high-rated films...")
-    # top_directors_by_high_rating_and_votes(dataframes, save_path="visualizations")
+    # top_directors_by_high_rating_and_votes(dataframes, save_path=visualization_path)
 
     # print("\nAnalyzing genre popularity trends...")
-    # genre_popularity_trend(dataframes, save_path="visualizations")
+    # genre_popularity_trend(dataframes, save_path=visualization_path)
 
     # print("\nAnalyzing genre and actor cyclicality...")
-    # genre_actor_cyclicality(dataframes, save_path="visualizations")
+    # genre_actor_cyclicality(dataframes, save_path=visualization_path)
 
     # print("\nAnalyzing genre duration and rating...")
-    # genre_duration_rating_analysis(dataframes, save_path="visualizations")
+    # genre_duration_rating_analysis(dataframes, save_path=visualization_path)
     
     # print("\nAnalyzing TV series seasons vs. rating correlation...")
-    # correlation_seasons_rating(dataframes, save_path="visualizations")
+    # correlation_seasons_rating(dataframes, save_path=visualization_path)
 
     # print("\nAnalyzing top TV episodes by votes...")
-    # top_episodes_by_votes_and_rating(dataframes, save_path="visualizations")
+    # top_episodes_by_votes_and_rating(dataframes, save_path=visualization_path)
 
     # print("\nAnalyzing influence of genre on TV series seasons...")
-    # genre_seasons_influence(dataframes, save_path="visualizations")
+    # genre_seasons_influence(dataframes, save_path=visualization_path)
 
     # print("\nAnalyzing actor demographics and career statistics...")
     # actors_demography_stats(dataframes, save_path="visualizations")
@@ -123,7 +125,7 @@ def main():
 
 
     # print("\n" + "="*50)
-    # print("All analyses complete. Visualizations saved to 'visualizations' directory.")
+    # print(f"All analyses complete. Visualizations saved to {visualization_path}.")
     # print("="*50)
 
     spark.stop()

@@ -2,39 +2,130 @@ import os
 import matplotlib.pyplot as plt
 import seaborn as sns
 from pyspark.sql import functions as F
-from pyspark.sql.window import Window
 
-
-def correlation_seasons_rating(dataframes, save_path="."):
+def correlation_seasons_rating(dataframes, save_path="."):    
     os.makedirs(save_path, exist_ok=True)
-
+    
     episodes = dataframes["title.episode"]
     ratings = dataframes["title.ratings"]
     basics = dataframes["title.basics"].filter(F.col("titleType") == "tvSeries")
-
-    seasons_count = episodes.groupBy("parentTconst").agg(F.max("seasonNumber").alias("num_seasons"))
-    tv_with_seasons = basics.join(seasons_count, basics.tconst == seasons_count.parentTconst).select(basics.tconst, "num_seasons")
+    
+    # Get season counts
+    seasons_count = episodes.groupBy("parentTconst").agg(
+        F.max("seasonNumber").alias("num_seasons")
+    )
+    
+    tv_with_seasons = basics.join(
+        seasons_count, 
+        basics.tconst == seasons_count.parentTconst
+    ).select(basics.tconst, "num_seasons")
+    
     tv_with_ratings = tv_with_seasons.join(ratings, "tconst")
-
-    corr_data = tv_with_ratings.groupBy("num_seasons").agg(
+    
+    # Create season groups: 1-19 individual, 20+ grouped
+    tv_with_ratings = tv_with_ratings.withColumn(
+        "season_group",
+        F.when(F.col("num_seasons") >= 20, "20+")
+         .otherwise(F.col("num_seasons").cast("string"))
+    )
+    
+    # Aggregate by season groups
+    corr_data = tv_with_ratings.groupBy("season_group").agg(
         F.avg("averageRating").alias("avg_rating"),
         F.count("tconst").alias("count")
-    ).orderBy("num_seasons")
-
+    )
+    
     corr_data_pd = corr_data.toPandas()
-
+    
     if not corr_data_pd.empty:
-        plt.figure(figsize=(12, 7))
-        sns.scatterplot(data=corr_data_pd, x="num_seasons", y="avg_rating", size="count", hue="count", sizes=(50, 500), alpha=0.7)
-        plt.title("Correlation Between Number of Seasons and Average Rating")
-        plt.xlabel("Number of Seasons")
-        plt.ylabel("Average Rating")
-        plt.legend(title="Number of Series")
-        plt.grid(True)
+        # Convert season_group to numeric for sorting (20+ goes at end)
+        def season_sort_key(x):
+            if x == "20+":
+                return 999
+            return int(x)
+        
+        corr_data_pd['sort_key'] = corr_data_pd['season_group'].apply(season_sort_key)
+        corr_data_pd = corr_data_pd.sort_values('sort_key')
+        
+        # Create bar plot
+        fig, ax1 = plt.subplots(figsize=(16, 8))
+        
+        # Color bars by rating (gradient)
+        colors = plt.cm.RdYlGn((corr_data_pd['avg_rating'] - corr_data_pd['avg_rating'].min()) / 
+                                (corr_data_pd['avg_rating'].max() - corr_data_pd['avg_rating'].min()))
+        
+        # Primary bars: Average rating
+        bars = ax1.bar(
+            range(len(corr_data_pd)),
+            corr_data_pd['avg_rating'],
+            color=colors,
+            edgecolor='black',
+            linewidth=1.5,
+            alpha=0.8
+        )
+        
+        ax1.set_xlabel("Number of Seasons", fontsize=13, fontweight='bold')
+        ax1.set_ylabel("Average Rating", fontsize=13, fontweight='bold', color='black')
+        ax1.set_title("TV Series: Average Rating by Number of Seasons", 
+                     fontsize=15, fontweight='bold', pad=20)
+        ax1.set_xticks(range(len(corr_data_pd)))
+        ax1.set_xticklabels(corr_data_pd['season_group'], rotation=45, ha='right')
+        ax1.tick_params(axis='y', labelcolor='black')
+        ax1.grid(True, alpha=0.3, axis='y', linestyle='--')
+        ax1.set_ylim(0, 10)
+        
+        # Add rating values on top of bars
+        for i, (idx, row) in enumerate(corr_data_pd.iterrows()):
+            ax1.text(
+                i,
+                row['avg_rating'] + 0.15,
+                f"{row['avg_rating']:.2f}",
+                ha='center',
+                va='bottom',
+                fontsize=9,
+                fontweight='bold'
+            )
+        
+        # Secondary axis for count
+        ax2 = ax1.twinx()
+        ax2.plot(
+            range(len(corr_data_pd)),
+            corr_data_pd['count'],
+            color='navy',
+            marker='o',
+            linewidth=2.5,
+            markersize=8,
+            label='Number of Series',
+            alpha=0.7
+        )
+        ax2.set_ylabel("Number of TV Series", fontsize=13, fontweight='bold', color='navy')
+        ax2.tick_params(axis='y', labelcolor='navy')
+        ax2.legend(loc='upper right', fontsize=11)
+        
+        # Add count labels
+        for i, (idx, row) in enumerate(corr_data_pd.iterrows()):
+            ax2.text(
+                i,
+                row['count'] + max(corr_data_pd['count']) * 0.02,
+                f"{row['count']:,}",
+                ha='center',
+                va='bottom',
+                fontsize=8,
+                color='navy',
+                alpha=0.7
+            )
+        
         plt.tight_layout()
-        plt.savefig(os.path.join(save_path, "seasons_rating_correlation.png"))
+        plt.savefig(os.path.join(save_path, "seasons_rating_correlation.png"), 
+                   dpi=300, bbox_inches='tight')
         plt.show()
-
+        
+        # Print correlation coefficient
+        # Use original numeric seasons for correlation (exclude 20+)
+        tv_numeric = tv_with_ratings.filter(F.col("num_seasons") < 20)
+        correlation = tv_numeric.stat.corr("num_seasons", "averageRating")
+        print(f"Correlation coefficient (seasons 1-19): {correlation:.4f}")
+        
     return corr_data
 
 
@@ -44,21 +135,41 @@ def top_episodes_by_votes_and_rating(dataframes, save_path="."):
     ratings = dataframes["title.ratings"]
     basics = dataframes["title.basics"]
 
-    ep_with_ratings = episodes.join(ratings, "tconst") \
-                              .join(basics.select("tconst", "primaryTitle"), "tconst")
+    ep_with_ratings = episodes.alias("ep").join(ratings.alias("r"), F.col("ep.tconst") == F.col("r.tconst")) \
+                              .join(basics.alias("b_ep"), F.col("ep.tconst") == F.col("b_ep.tconst")) \
+                              .join(basics.alias("b_parent"), F.col("ep.parentTconst") == F.col("b_parent.tconst")) \
+                              .select(
+                                  F.col("ep.tconst"),
+                                  F.col("b_ep.primaryTitle").alias("episodeTitle"),
+                                  F.col("b_parent.primaryTitle").alias("seriesTitle"),
+                                  F.col("ep.seasonNumber"),
+                                  F.col("ep.episodeNumber"),
+                                  F.col("r.numVotes"),
+                                  F.col("r.averageRating")
+                              )
 
     top_episodes = ep_with_ratings.orderBy(F.desc("numVotes")).select(
-        "tconst", "primaryTitle", "numVotes", "averageRating"
+        "tconst",
+        "episodeTitle",
+        "seriesTitle",
+        "seasonNumber",
+        "episodeNumber",
+        "numVotes",
+        "averageRating"
     ).limit(20)
 
     top_episodes_pd = top_episodes.toPandas()
 
     if not top_episodes_pd.empty:
         plt.figure(figsize=(12, 10))
-        sns.barplot(data=top_episodes_pd, x="numVotes", y="primaryTitle", orient='h')
+        top_episodes_pd['fullTitle'] = top_episodes_pd.apply(
+            lambda row: f"{row['seriesTitle']} - S{row['seasonNumber']}E{row['episodeNumber']}: {row['episodeTitle']}",
+            axis=1
+        )
+        sns.barplot(data=top_episodes_pd, x="numVotes", y="fullTitle", orient='h')
         plt.title("Top 20 TV Episodes by Number of Votes")
         plt.xlabel("Number of Votes")
-        plt.ylabel("Episode Title")
+        plt.ylabel("Episode (Series - SeasonEpisode: Title)")
         plt.tight_layout()
         plt.savefig(os.path.join(save_path, "top_episodes_by_votes.png"))
         plt.show()
@@ -71,7 +182,7 @@ def genre_seasons_influence(dataframes, save_path="."):
     Як жанрове різноманіття впливає на кількість сезонів серіалів
     """
     os.makedirs(save_path, exist_ok=True)
-    
+
     basics = dataframes["title.basics"]
     episodes = dataframes["title.episode"]
 

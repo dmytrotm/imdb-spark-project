@@ -7,57 +7,98 @@ from pyspark.sql import Window
 def actors_demography_stats(dataframes, save_path="."):
     """
     Соціальна демографія акторів: вік (birthYear), активність (уникальна кількість фільмів), середній рейтинг
-    """
+    """    
     os.makedirs(save_path, exist_ok=True)
+    
     # Таблиці
     name_basics = dataframes["name.basics"]
     principals = dataframes["title.principals"]
     ratings = dataframes["title.ratings"]
-
+    
     # Беремо тільки акторів та актрис
     actors = principals.filter(F.col("category").isin(["actor", "actress"]))
-
-    # Обчислюємо унікальні пари актор-фільм (щоб не рахувати дублікати)
+    
+    # Обчислюємо унікальні пари актор-фільм
     distinct_works = actors.select("nconst", "tconst").distinct()
-
+    
     # Підрахунок унікальної кількості фільмів/серіалів на актора
     film_counts = distinct_works.groupBy("nconst").agg(F.count("tconst").alias("num_titles"))
-
-    # Об’єднуємо з інформацією про акторів (ім'я та рік народження)
+    
+    # Об'єднуємо з інформацією про акторів
     actors_info = film_counts.join(
         name_basics.select("nconst", "primaryName", "birthYear"),
         "nconst"
-    )
-
+    ).filter(F.col("birthYear").isNotNull())  # Filter out null birth years
+    
     # Обчислюємо середній рейтинг для кожного актора
     actors_films = distinct_works.join(ratings, "tconst")
     avg_ratings = actors_films.groupBy("nconst").agg(F.avg("averageRating").alias("avg_rating"))
-
-    # Об’єднуємо всі дані
+    
+    # Об'єднуємо всі дані
     actors_info = actors_info.join(avg_ratings, "nconst")
-
+    
+    # Calculate age (approximate, using 2024 as reference)
+    actors_info = actors_info.withColumn("age", F.lit(2024) - F.col("birthYear"))
+    
     # Відкидаємо дублі, сортуємо за активністю та обираємо топ 30
     result = actors_info.dropDuplicates().orderBy(F.desc("num_titles")).limit(30)
-
     result_pd = result.toPandas()
-
+    
     if not result_pd.empty:
-        plt.figure(figsize=(14, 8))
-        sns.scatterplot(data=result_pd, x="num_titles", y="avg_rating", hue="birthYear", size="num_titles", sizes=(100, 1000), alpha=0.7, palette="viridis")
-        plt.title("Top 30 Actors: Career Volume vs. Average Rating")
-        plt.xlabel("Number of Titles")
-        plt.ylabel("Average Rating")
-        plt.legend(title="Birth Year", bbox_to_anchor=(1.05, 1), loc='upper left')
-        plt.grid(True)
+        # Single comprehensive plot
+        fig, ax = plt.subplots(figsize=(14, 8))
         
-        # Add labels for each point
-        for i, row in result_pd.iterrows():
-            plt.text(row['num_titles'] + 0.3, row['avg_rating'], row['primaryName'], fontsize=9)
-
+        # Main scatter plot: Career Volume vs Rating (colored by age)
+        scatter = ax.scatter(
+            result_pd['num_titles'], 
+            result_pd['avg_rating'],
+            c=result_pd['age'],
+            s=result_pd['num_titles'] * 5,  # Size proportional to activity
+            alpha=0.6,
+            cmap='coolwarm',
+            edgecolors='black',
+            linewidth=1
+        )
+        
+        ax.set_xlabel("Number of Titles (Career Volume)", fontsize=13, fontweight='bold')
+        ax.set_ylabel("Average Rating", fontsize=13, fontweight='bold')
+        ax.set_title("Top 30 Actors: Career Volume vs. Quality\n(Bubble size = activity, Color = age)", 
+                    fontsize=15, fontweight='bold', pad=20)
+        ax.grid(True, alpha=0.3, linestyle='--')
+        
+        # Add colorbar for age
+        cbar = plt.colorbar(scatter, ax=ax)
+        cbar.set_label('Age (years)', fontsize=12, fontweight='bold')
+        
+        # Add selective labels with smart positioning
+        # Label top 8 by volume and top 5 by rating (with some overlap)
+        top_by_volume = set(result_pd.nlargest(8, 'num_titles').index)
+        top_by_rating = set(result_pd.nlargest(5, 'avg_rating').index)
+        labels_to_show = top_by_volume.union(top_by_rating)
+        
+        for idx in labels_to_show:
+            row = result_pd.loc[idx]
+            ax.annotate(
+                row['primaryName'], 
+                (row['num_titles'], row['avg_rating']),
+                xytext=(8, 8),
+                textcoords='offset points',
+                fontsize=9,
+                alpha=0.85,
+                bbox=dict(boxstyle='round,pad=0.4', facecolor='wheat', alpha=0.7, edgecolor='gray'),
+                arrowprops=dict(arrowstyle='->', connectionstyle='arc3,rad=0.3', color='gray', lw=0.5)
+            )
+        
+        # Add reference lines
+        median_rating = result_pd['avg_rating'].median()
+        ax.axhline(y=median_rating, color='red', linestyle='--', alpha=0.5, linewidth=1.5, label=f'Median Rating: {median_rating:.2f}')
+        
+        ax.legend(loc='lower right', fontsize=10)
+        
         plt.tight_layout()
-        plt.savefig(os.path.join(save_path, "actor_stats_scatterplot.png"))
+        plt.savefig(os.path.join(save_path, "actor_stats_scatterplot.png"), dpi=300, bbox_inches='tight')
         plt.show()
-
+        
     return result
 
 
