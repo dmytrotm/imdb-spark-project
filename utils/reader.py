@@ -1,6 +1,5 @@
-
 from pyspark.sql import SparkSession
-from schemas import (
+from utils.schemas import (
     name_basics_schema, title_akas_schema, title_basics_schema,
     title_crew_schema, title_episode_schema, title_principals_schema,
     title_ratings_schema
