@@ -27,6 +27,7 @@ from analysis import (
     sophomore_slump,
     localization_gaps
 )
+from ml import film_raiting_linear,film_raiting_decision_tree,film_raiting_random_forest
 
 def main():
     spark = SparkSession.builder.appName("IMDBAnalysis").getOrCreate()
@@ -104,29 +105,60 @@ def main():
 
     # print("\nAnalyzing actor demographics and career statistics...")
     # actors_demography_stats(dataframes, save_path="visualizations")
-    print("\nAnalyzing rising stars...")
-    rising_stars(dataframes=dataframes,save_path="visualizations")
+    # print("\nAnalyzing rising stars...")
+    # rising_stars(dataframes=dataframes,save_path="visualizations")
     
-    print("\nAnalyzing hook shows...")
-    hook_shows(dataframes=dataframes,save_path="visualizations")
+    # print("\nAnalyzing hook shows...")
+    # hook_shows(dataframes=dataframes,save_path="visualizations")
     
-    print("\nAnalyzing localization gaps...")
-    localization_gaps(dataframes=dataframes,save_path="visualizations")
+    # print("\nAnalyzing localization gaps...")
+    # localization_gaps(dataframes=dataframes,save_path="visualizations")
     
-    print("\nAnalyzing fading stars...")
-    fading_stars(dataframes=dataframes,save_path="visualizations")
+    # print("\nAnalyzing fading stars...")
+    # fading_stars(dataframes=dataframes,save_path="visualizations")
     
-    print("\nAnalyzing underrated genre combos...")
-    underrated_genre_combos(dataframes=dataframes,save_path="visualizations")
+    # print("\nAnalyzing underrated genre combos...")
+    # underrated_genre_combos(dataframes=dataframes,save_path="visualizations")
     
-    print("\nAnalyzing sophomore slump...")
-    sophomore_slump(dataframes=dataframes,save_path="visualizations")
+    # print("\nAnalyzing sophomore slump...")
+    # sophomore_slump(dataframes=dataframes,save_path="visualizations")
 
 
 
     # print("\n" + "="*50)
     # print(f"All analyses complete. Visualizations saved to {visualization_path}.")
     # print("="*50)
+
+
+    actor_stats_df = avg_rating_by_actor(
+        dataframes,
+        min_films=5 
+    )
+
+    rising_stars_df_full = rising_stars(dataframes)
+
+    rising_stars_df_for_model = rising_stars_df_full.select("nconst", "avg_velocity").distinct()
+
+    print("\nКрок 3: Запуск навчання регресійної моделі.")
+
+    trained_model_pipeline_linear = film_raiting_linear(
+        spark,
+        dataframes,
+        actor_stats_df=actor_stats_df,
+        rising_stars_df=rising_stars_df_for_model
+    )
+    trained_model_pipeline_dt = film_raiting_decision_tree(
+        spark,
+        dataframes,
+        actor_stats_df=actor_stats_df,
+        rising_stars_df=rising_stars_df_for_model
+    )
+    trained_model_pipeline_rf = film_raiting_random_forest(
+        spark,
+        dataframes,
+        actor_stats_df=actor_stats_df,
+        rising_stars_df=rising_stars_df_for_model
+    )
 
     spark.stop()
 

@@ -4,9 +4,14 @@ import seaborn as sns
 from pyspark.sql import functions as F
 from pyspark.sql import Window
 
-def actors_demography_stats(dataframes, save_path="."):
+def actors_demography_stats(dataframes, save_path=".", actor_ids=None):
     """
-    Соціальна демографія акторів: вік (birthYear), активність (уникальна кількість фільмів), середній рейтинг
+    Соціальна демографія акторів:
+    - вік (birthYear)
+    - активність (num_titles)
+    - середній рейтинг (avg_rating)
+
+    Якщо actor_ids не None -> фільтруємо акторів лише по цих nconst.
     """    
     os.makedirs(save_path, exist_ok=True)
     
@@ -17,89 +22,92 @@ def actors_demography_stats(dataframes, save_path="."):
     
     # Беремо тільки акторів та актрис
     actors = principals.filter(F.col("category").isin(["actor", "actress"]))
+
+    # Якщо передано список акторів -> фільтруємо
+    if actor_ids is not None:
+        actors = actors.filter(F.col("nconst").isin(actor_ids))
     
-    # Обчислюємо унікальні пари актор-фільм
+    # Унікальні пари актор-фільм
     distinct_works = actors.select("nconst", "tconst").distinct()
     
-    # Підрахунок унікальної кількості фільмів/серіалів на актора
+    # Кількість фільмів на актора
     film_counts = distinct_works.groupBy("nconst").agg(F.count("tconst").alias("num_titles"))
     
-    # Об'єднуємо з інформацією про акторів
+    # Інформація про акторів
     actors_info = film_counts.join(
         name_basics.select("nconst", "primaryName", "birthYear"),
         "nconst"
-    ).filter(F.col("birthYear").isNotNull())  # Filter out null birth years
+    ).filter(F.col("birthYear").isNotNull())
     
-    # Обчислюємо середній рейтинг для кожного актора
+    # Середній рейтинг
     actors_films = distinct_works.join(ratings, "tconst")
     avg_ratings = actors_films.groupBy("nconst").agg(F.avg("averageRating").alias("avg_rating"))
     
-    # Об'єднуємо всі дані
     actors_info = actors_info.join(avg_ratings, "nconst")
     
-    # Calculate age (approximate, using 2024 as reference)
+    # Вік
     actors_info = actors_info.withColumn("age", F.lit(2024) - F.col("birthYear"))
     
-    # Відкидаємо дублі, сортуємо за активністю та обираємо топ 30
-    result = actors_info.dropDuplicates().orderBy(F.desc("num_titles")).limit(30)
+    # Якщо список акторів НЕ передано → обмежуємо топ-30
+    if actor_ids is None:
+        result = actors_info.dropDuplicates().orderBy(F.desc("num_titles")).limit(30)
+    else:
+        result = actors_info.dropDuplicates().orderBy(F.desc("num_titles"))
+    
     result_pd = result.toPandas()
     
     if not result_pd.empty:
-        # Single comprehensive plot
         fig, ax = plt.subplots(figsize=(14, 8))
-        
-        # Main scatter plot: Career Volume vs Rating (colored by age)
+
         scatter = ax.scatter(
             result_pd['num_titles'], 
             result_pd['avg_rating'],
             c=result_pd['age'],
-            s=result_pd['num_titles'] * 5,  # Size proportional to activity
+            s=result_pd['num_titles'] * 5,
             alpha=0.6,
             cmap='coolwarm',
             edgecolors='black',
             linewidth=1
         )
-        
+
         ax.set_xlabel("Number of Titles (Career Volume)", fontsize=13, fontweight='bold')
         ax.set_ylabel("Average Rating", fontsize=13, fontweight='bold')
-        ax.set_title("Top 30 Actors: Career Volume vs. Quality\n(Bubble size = activity, Color = age)", 
-                    fontsize=15, fontweight='bold', pad=20)
-        ax.grid(True, alpha=0.3, linestyle='--')
         
-        # Add colorbar for age
+        title_suffix = "" if actor_ids is None else " (Filtered)"
+        ax.set_title(
+            f"Actors: Career Volume vs Quality{title_suffix}\n(Bubble size = activity, Color = age)", 
+            fontsize=15, fontweight='bold', pad=20
+        )
+
+        ax.grid(True, alpha=0.3, linestyle='--')
+
         cbar = plt.colorbar(scatter, ax=ax)
         cbar.set_label('Age (years)', fontsize=12, fontweight='bold')
-        
-        # Add selective labels with smart positioning
-        # Label top 8 by volume and top 5 by rating (with some overlap)
-        top_by_volume = set(result_pd.nlargest(8, 'num_titles').index)
-        top_by_rating = set(result_pd.nlargest(5, 'avg_rating').index)
-        labels_to_show = top_by_volume.union(top_by_rating)
-        
-        for idx in labels_to_show:
-            row = result_pd.loc[idx]
-            ax.annotate(
-                row['primaryName'], 
-                (row['num_titles'], row['avg_rating']),
-                xytext=(8, 8),
-                textcoords='offset points',
-                fontsize=9,
-                alpha=0.85,
-                bbox=dict(boxstyle='round,pad=0.4', facecolor='wheat', alpha=0.7, edgecolor='gray'),
-                arrowprops=dict(arrowstyle='->', connectionstyle='arc3,rad=0.3', color='gray', lw=0.5)
-            )
-        
-        # Add reference lines
+
+        # Лейбли — лише якщо небагато акторів або фільтр
+        if actor_ids is not None or len(result_pd) <= 30:
+            for idx, row in result_pd.iterrows():
+                ax.annotate(
+                    row['primaryName'], 
+                    (row['num_titles'], row['avg_rating']),
+                    xytext=(8, 8),
+                    textcoords='offset points',
+                    fontsize=9,
+                    alpha=0.85,
+                    bbox=dict(boxstyle='round,pad=0.4', facecolor='wheat', alpha=0.7, edgecolor='gray'),
+                    arrowprops=dict(arrowstyle='->', connectionstyle='arc3,rad=0.3', color='gray', lw=0.5)
+                )
+
+        # Reference: median rating
         median_rating = result_pd['avg_rating'].median()
-        ax.axhline(y=median_rating, color='red', linestyle='--', alpha=0.5, linewidth=1.5, label=f'Median Rating: {median_rating:.2f}')
-        
-        ax.legend(loc='lower right', fontsize=10)
-        
+        ax.axhline(y=median_rating, color='red', linestyle='--', alpha=0.5, linewidth=1.5)
+
         plt.tight_layout()
         plt.savefig(os.path.join(save_path, "actor_stats_scatterplot.png"), dpi=300, bbox_inches='tight')
         plt.show()
-        
+    
     return result
+
 
 
 def avg_rating_by_actor(datasets, save_path=".", min_films=10, top_n=20):
@@ -118,9 +126,7 @@ def avg_rating_by_actor(datasets, save_path=".", min_films=10, top_n=20):
     """
     os.makedirs(save_path, exist_ok=True)
     
-    print("\n" + "="*80)
-    print(f"BUSINESS QUESTION: Actors with highest average film rating (min. {min_films} films)")
-    print("="*80)
+    
     
     basics_df = datasets['title.basics']
     principals_df = datasets['title.principals']
@@ -165,12 +171,8 @@ def avg_rating_by_actor(datasets, save_path=".", min_films=10, top_n=20):
         "inner"
     )
     
-    print(f"\nTop-{top_n} actors with highest average rating:")
     top_actors = actor_stats_with_names.orderBy(F.desc("avg_rating")).limit(top_n)
-    top_actors.select(
-        "primaryName", "film_count", F.round("avg_rating", 2).alias("avg_rating"),
-        "total_votes", "birthYear"
-    ).show(truncate=False)
+    
     
     # Visualization
     top_actors_pd = top_actors.toPandas()
@@ -368,9 +370,10 @@ def young_actors_2000s(datasets, save_path=".", years_back=5):
     return age_distribution
 
 
-def rising_stars(dataframes, save_path="."):
+def rising_stars(dataframes, save_path=".", actor_ids=None):
     """
-    10 акторів із найшвидшим зростанням попиту (velocity росту голосів за фільми за 5 років)
+    Rising stars: actors with fastest growth of demand (velocity of vote growth).
+    If actor_ids is provided -> compute velocity only for these actors.
     """
 
     os.makedirs(save_path, exist_ok=True)
@@ -378,55 +381,79 @@ def rising_stars(dataframes, save_path="."):
     name_basics = dataframes["name.basics"]
     principals = dataframes["title.principals"]
     ratings = dataframes["title.ratings"]
-    akas = dataframes["title.akas"]
     basics = dataframes["title.basics"]
 
+    # Take only actors
     actors = principals.filter(F.col("category").isin(["actor", "actress"]))
 
-  
-    works = actors.join(basics.select("tconst", "startYear"), "tconst") \
-                  .join(ratings.select("tconst", "numVotes"), "tconst") \
-                  .filter((F.col("startYear") >= F.lit(2018)) & (F.col("startYear") <= F.lit(2023)))
+    # Apply actor_ids filter if provided
+    if actor_ids is not None:
+        actors = actors.filter(F.col("nconst").isin(actor_ids))
 
-    votes_by_year = works.groupBy("nconst", "startYear") \
-                         .agg(F.avg("numVotes").alias("avg_votes"))
+    # Select works from 2018–2023
+    works = (
+        actors.join(basics.select("tconst", "startYear"), "tconst")
+              .join(ratings.select("tconst", "numVotes"), "tconst")
+              .filter((F.col("startYear") >= 2018) & (F.col("startYear") <= 2023))
+    )
 
-   
-    window_count_years = Window.partitionBy("nconst")
-    votes_by_year_filtered = votes_by_year.withColumn("num_years", F.count("*").over(window_count_years)) \
-                                          .filter(F.col("num_years") > 1) \
-                                          .select("nconst", "startYear", "avg_votes") # Прибираємо зайвий стовпець
+    # Votes by year
+    votes_by_year = (
+        works.groupBy("nconst", "startYear")
+             .agg(F.avg("numVotes").alias("avg_votes"))
+    )
 
-    
-    
+    # Require at least 2 years of data
+    w_years = Window.partitionBy("nconst")
+    votes_by_year_filtered = (
+        votes_by_year.withColumn("num_years", F.count("*").over(w_years))
+                     .filter(F.col("num_years") > 1)
+                     .select("nconst", "startYear", "avg_votes")
+    )
+
+    # Velocity calculation
     w = Window.partitionBy("nconst").orderBy("startYear")
     votes_enriched = votes_by_year_filtered.withColumn("prev_avg", F.lag("avg_votes").over(w))
     votes_enriched = votes_enriched.withColumn("velocity", F.col("avg_votes") - F.col("prev_avg"))
 
-    actor_velocity = votes_enriched.groupBy("nconst") \
-        .agg(F.avg("velocity").alias("avg_velocity")) \
-        .filter(F.col("avg_velocity") > 0) \
-        .orderBy(F.desc("avg_velocity")) \
-        .limit(10)
+    actor_velocity = (
+        votes_enriched.groupBy("nconst")
+                      .agg(F.avg("velocity").alias("avg_velocity"))
+                      .filter(F.col("avg_velocity") > 0)
+    )
 
+    # If actor_ids is None → default behavior: top-10
+    if actor_ids is None:
+        actor_velocity = actor_velocity.orderBy(F.desc("avg_velocity")).limit(10)
+    else:
+        # user-defined actor list → sort but preserve all
+        actor_velocity = actor_velocity.orderBy(F.desc("avg_velocity"))
+
+    # Add actor names
     result = actor_velocity.join(name_basics.select("nconst", "primaryName"), "nconst")
 
-    
+    # Visualization
     result_pd = result.toPandas()
 
     if not result_pd.empty:
         result_pd = result_pd.sort_values('avg_velocity', ascending=False)
+
         plt.figure(figsize=(12, 6))
         sns.barplot(data=result_pd, x="primaryName", y="avg_velocity")
-        plt.title("Top 10 Rising Actors (Velocity of Demand Growth)")
+        
+        title_suffix = "" if actor_ids is None else " (Filtered)"
+        plt.title(f"Rising Actors by Vote Growth Velocity{title_suffix}")
         plt.xlabel("Actor")
         plt.ylabel("Avg Vote Growth per Year")
         plt.xticks(rotation=45, ha='right')
         plt.tight_layout()
-        plt.savefig(os.path.join(save_path, "rising_stars.png"))
+        
+        filename = "rising_stars_filtered.png" if actor_ids else "rising_stars.png"
+        plt.savefig(os.path.join(save_path, filename))
         plt.show()
 
     return result
+
 
 
 
