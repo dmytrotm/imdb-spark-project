@@ -3,6 +3,7 @@ from pyspark.ml.feature import VectorAssembler
 from pyspark.ml.regression import LinearRegression
 from pyspark.ml import Pipeline
 from pyspark.ml.evaluation import RegressionEvaluator
+from pyspark.ml.tuning import CrossValidator, ParamGridBuilder
 from .metrics import calculate_regression_metrics
 
 def film_raiting_linear(spark,
