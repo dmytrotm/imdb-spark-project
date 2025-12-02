@@ -9,3 +9,16 @@ services:
     volumes:
       - .:/app
       - ../data:/data
+  
+  jupyter:
+    build: .
+    command: jupyter notebook --ip=0.0.0.0 --port=8888 --no-browser --allow-root --NotebookApp.token='' --NotebookApp.password=''
+    environment:
+      - PYTHONUNBUFFERED=1
+      - SPARK_DRIVER_MEMORY=4g
+      - SPARK_EXECUTOR_MEMORY=4g
+    ports:
+      - "8888:8888"
+    volumes:
+      - .:/app
+      - ../data:/data
