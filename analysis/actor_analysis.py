@@ -3,224 +3,372 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from pyspark.sql import functions as F
 from pyspark.sql import Window
+from analysis.general import filter_by_region, get_top_regions
 
-def actors_demography_stats(dataframes, save_path="."):
+
+def actors_demography_stats(dataframes, save_path=".", top_n_regions=5):
     """
     Соціальна демографія акторів: вік (birthYear), активність (уникальна кількість фільмів), середній рейтинг
-    """    
+    Створює 3 окремі візуалізації для кращого розуміння:
+    1. Топ-10 найактивніших акторів по регіонах (bar chart)
+    2. Топ-10 акторів з найвищим рейтингом по регіонах (bar chart)
+    3. Розподіл віку топ-акторів по регіонах (box plot)
+    """
     os.makedirs(save_path, exist_ok=True)
-    
+
     # Таблиці
     name_basics = dataframes["name.basics"]
     principals = dataframes["title.principals"]
     ratings = dataframes["title.ratings"]
-    
+    akas = dataframes["title.akas"]
+    basics = dataframes["title.basics"]
+
+    # Get top regions
+    top_regions = get_top_regions(akas, top_n_regions)
+    print(f"Analyzing actor demographics for regions: {top_regions}")
+
+    # Filter akas to only these regions and get unique title-region pairs
+    regional_akas = (
+        akas.filter(F.col("region").isin(top_regions))
+        .select(F.col("titleId").alias("tconst"), "region")
+        .distinct()
+    )
+
+    # Filter for movies only
+    movies = basics.filter(F.col("titleType") == "movie").select("tconst")
+
     # Беремо тільки акторів та актрис
     actors = principals.filter(F.col("category").isin(["actor", "actress"]))
-    
-    # Обчислюємо унікальні пари актор-фільм
-    distinct_works = actors.select("nconst", "tconst").distinct()
-    
-    # Підрахунок унікальної кількості фільмів/серіалів на актора
-    film_counts = distinct_works.groupBy("nconst").agg(F.count("tconst").alias("num_titles"))
-    
+
+    # Join with movies and regional_akas to get region info
+    actors_regional = actors.join(movies, "tconst").join(regional_akas, "tconst")
+
+    # Обчислюємо унікальні пари актор-фільм-регіон
+    distinct_works = actors_regional.select("region", "nconst", "tconst").distinct()
+
+    # Підрахунок унікальної кількості фільмів на актора per region
+    film_counts = distinct_works.groupBy("region", "nconst").agg(
+        F.count("tconst").alias("num_titles")
+    )
+
     # Об'єднуємо з інформацією про акторів
     actors_info = film_counts.join(
-        name_basics.select("nconst", "primaryName", "birthYear"),
-        "nconst"
-    ).filter(F.col("birthYear").isNotNull())  # Filter out null birth years
-    
-    # Обчислюємо середній рейтинг для кожного актора
+        name_basics.select("nconst", "primaryName", "birthYear"), "nconst"
+    ).filter(
+        F.col("birthYear").isNotNull()
+    )  # Filter out null birth years
+
+    # Обчислюємо середній рейтинг для кожного актора per region
     actors_films = distinct_works.join(ratings, "tconst")
-    avg_ratings = actors_films.groupBy("nconst").agg(F.avg("averageRating").alias("avg_rating"))
-    
+    avg_ratings = actors_films.groupBy("region", "nconst").agg(
+        F.avg("averageRating").alias("avg_rating")
+    )
+
     # Об'єднуємо всі дані
-    actors_info = actors_info.join(avg_ratings, "nconst")
-    
+    actors_info = actors_info.join(avg_ratings, ["region", "nconst"])
+
     # Calculate age (approximate, using 2024 as reference)
     actors_info = actors_info.withColumn("age", F.lit(2024) - F.col("birthYear"))
-    
-    # Відкидаємо дублі, сортуємо за активністю та обираємо топ 30
-    result = actors_info.dropDuplicates().orderBy(F.desc("num_titles")).limit(30)
-    result_pd = result.toPandas()
-    
+
+    # Filter actors with minimum activity (at least 5 films in region)
+    actors_info = actors_info.filter(F.col("num_titles") >= 5)
+
+    result_pd = actors_info.toPandas()
+
     if not result_pd.empty:
-        # Single comprehensive plot
-        fig, ax = plt.subplots(figsize=(14, 8))
-        
-        # Main scatter plot: Career Volume vs Rating (colored by age)
-        scatter = ax.scatter(
-            result_pd['num_titles'], 
-            result_pd['avg_rating'],
-            c=result_pd['age'],
-            s=result_pd['num_titles'] * 5,  # Size proportional to activity
-            alpha=0.6,
-            cmap='coolwarm',
-            edgecolors='black',
-            linewidth=1
-        )
-        
-        ax.set_xlabel("Number of Titles (Career Volume)", fontsize=13, fontweight='bold')
-        ax.set_ylabel("Average Rating", fontsize=13, fontweight='bold')
-        ax.set_title("Top 30 Actors: Career Volume vs. Quality\n(Bubble size = activity, Color = age)", 
-                    fontsize=15, fontweight='bold', pad=20)
-        ax.grid(True, alpha=0.3, linestyle='--')
-        
-        # Add colorbar for age
-        cbar = plt.colorbar(scatter, ax=ax)
-        cbar.set_label('Age (years)', fontsize=12, fontweight='bold')
-        
-        # Add selective labels with smart positioning
-        # Label top 8 by volume and top 5 by rating (with some overlap)
-        top_by_volume = set(result_pd.nlargest(8, 'num_titles').index)
-        top_by_rating = set(result_pd.nlargest(5, 'avg_rating').index)
-        labels_to_show = top_by_volume.union(top_by_rating)
-        
-        for idx in labels_to_show:
-            row = result_pd.loc[idx]
-            ax.annotate(
-                row['primaryName'], 
-                (row['num_titles'], row['avg_rating']),
-                xytext=(8, 8),
-                textcoords='offset points',
-                fontsize=9,
-                alpha=0.85,
-                bbox=dict(boxstyle='round,pad=0.4', facecolor='wheat', alpha=0.7, edgecolor='gray'),
-                arrowprops=dict(arrowstyle='->', connectionstyle='arc3,rad=0.3', color='gray', lw=0.5)
+        num_regions = len(top_regions)
+        cols = 2
+        rows = (num_regions + 1) // 2
+
+        # ===== VISUALIZATION 1: Top 10 Most Active Actors by Region =====
+        fig1, axes1 = plt.subplots(rows, cols, figsize=(15, 5 * rows))
+        axes1 = axes1.flatten() if num_regions > 1 else [axes1]
+
+        for i, region in enumerate(top_regions):
+            ax = axes1[i]
+            region_data = result_pd[result_pd["region"] == region].nlargest(
+                10, "num_titles"
             )
-        
-        # Add reference lines
-        median_rating = result_pd['avg_rating'].median()
-        ax.axhline(y=median_rating, color='red', linestyle='--', alpha=0.5, linewidth=1.5, label=f'Median Rating: {median_rating:.2f}')
-        
-        ax.legend(loc='lower right', fontsize=10)
-        
+
+            if not region_data.empty:
+                sns.barplot(
+                    data=region_data,
+                    x="num_titles",
+                    y="primaryName",
+                    hue="primaryName",
+                    palette="Blues_r",
+                    legend=False,
+                    ax=ax,
+                )
+                ax.set_title(
+                    f"Top 10 Most Active Actors in {region}",
+                    fontsize=12,
+                    fontweight="bold",
+                )
+                ax.set_xlabel("Number of Films", fontsize=10)
+                ax.set_ylabel("")
+            else:
+                ax.text(0.5, 0.5, "No data", ha="center", va="center")
+                ax.set_title(f"Top 10 Most Active Actors in {region}")
+
+        for j in range(i + 1, len(axes1)):
+            axes1[j].axis("off")
+
         plt.tight_layout()
-        plt.savefig(os.path.join(save_path, "actor_stats_scatterplot.png"), dpi=300, bbox_inches='tight')
+        plt.savefig(
+            os.path.join(save_path, "actor_activity_by_region.png"),
+            dpi=300,
+            bbox_inches="tight",
+        )
         plt.show()
-        
-    return result
+
+        # ===== VISUALIZATION 2: Top 10 Highest Rated Actors by Region =====
+        fig2, axes2 = plt.subplots(rows, cols, figsize=(15, 5 * rows))
+        axes2 = axes2.flatten() if num_regions > 1 else [axes2]
+
+        for i, region in enumerate(top_regions):
+            ax = axes2[i]
+            # Filter actors with at least 10 films for more reliable ratings
+            region_data = result_pd[
+                (result_pd["region"] == region) & (result_pd["num_titles"] >= 10)
+            ].nlargest(10, "avg_rating")
+
+            if not region_data.empty:
+                sns.barplot(
+                    data=region_data,
+                    x="avg_rating",
+                    y="primaryName",
+                    hue="primaryName",
+                    palette="Greens_r",
+                    legend=False,
+                    ax=ax,
+                )
+                ax.set_title(
+                    f"Top 10 Highest Rated Actors in {region}\n(min. 10 films)",
+                    fontsize=12,
+                    fontweight="bold",
+                )
+                ax.set_xlabel("Average Rating", fontsize=10)
+                ax.set_ylabel("")
+                ax.set_xlim(0, 10)
+            else:
+                ax.text(0.5, 0.5, "No data", ha="center", va="center")
+                ax.set_title(f"Top 10 Highest Rated Actors in {region}")
+
+        for j in range(i + 1, len(axes2)):
+            axes2[j].axis("off")
+
+        plt.tight_layout()
+        plt.savefig(
+            os.path.join(save_path, "actor_quality_by_region.png"),
+            dpi=300,
+            bbox_inches="tight",
+        )
+        plt.show()
+
+        # ===== VISUALIZATION 3: Age Distribution of Top Actors by Region =====
+        fig3, axes3 = plt.subplots(rows, cols, figsize=(15, 5 * rows))
+        axes3 = axes3.flatten() if num_regions > 1 else [axes3]
+
+        for i, region in enumerate(top_regions):
+            ax = axes3[i]
+            # Get top 30 actors by activity for age analysis
+            region_data = result_pd[result_pd["region"] == region].nlargest(
+                30, "num_titles"
+            )
+
+            if not region_data.empty:
+                # Box plot with individual points
+                sns.boxplot(
+                    data=region_data, y="age", color="lightblue", ax=ax, width=0.3
+                )
+                sns.stripplot(
+                    data=region_data,
+                    y="age",
+                    color="darkblue",
+                    alpha=0.6,
+                    size=8,
+                    ax=ax,
+                )
+
+                ax.set_title(
+                    f"Age Distribution of Top 30 Actors in {region}",
+                    fontsize=12,
+                    fontweight="bold",
+                )
+                ax.set_ylabel("Age (years)", fontsize=10)
+                ax.set_xlabel("")
+
+                # Add statistics text
+                mean_age = region_data["age"].mean()
+                median_age = region_data["age"].median()
+                ax.text(
+                    0.98,
+                    0.98,
+                    f"Mean: {mean_age:.1f}\nMedian: {median_age:.1f}",
+                    transform=ax.transAxes,
+                    fontsize=10,
+                    verticalalignment="top",
+                    horizontalalignment="right",
+                    bbox=dict(boxstyle="round", facecolor="wheat", alpha=0.7),
+                )
+            else:
+                ax.text(0.5, 0.5, "No data", ha="center", va="center")
+                ax.set_title(f"Age Distribution in {region}")
+
+        for j in range(i + 1, len(axes3)):
+            axes3[j].axis("off")
+
+        plt.tight_layout()
+        plt.savefig(
+            os.path.join(save_path, "actor_age_distribution_by_region.png"),
+            dpi=300,
+            bbox_inches="tight",
+        )
+        plt.show()
+
+    return actors_info
 
 
-def avg_rating_by_actor(datasets, save_path=".", min_films=10, top_n=20):
+def avg_rating_by_actor(
+    datasets, save_path=".", min_films=10, top_n=20, top_n_regions=5
+):
     """
-    Analyzes average film ratings for actors with a minimum number of films.
+    Analyzes average film ratings for actors with a minimum number of films per region.
     Identifies actors associated with high-quality productions for casting decisions.
 
     Args:
         datasets (dict): A dictionary of Spark DataFrames.
         save_path (str): The path to save the visualizations.
         min_films (int): Minimum number of films. Defaults to 10.
-        top_n (int): Number of top actors to show. Defaults to 20.
-    
+        top_n (int): Number of top actors to show per region. Defaults to 20.
+        top_n_regions (int): Number of top regions to analyze. Defaults to 5.
+
     Returns:
         pyspark.sql.DataFrame: A DataFrame with actor statistics including average ratings and film counts.
     """
     os.makedirs(save_path, exist_ok=True)
-    
-    print("\n" + "="*80)
-    print(f"BUSINESS QUESTION: Actors with highest average film rating (min. {min_films} films)")
-    print("="*80)
-    
-    basics_df = datasets['title.basics']
-    principals_df = datasets['title.principals']
-    ratings_df = datasets['title.ratings']
-    names_df = datasets['name.basics']
-    
+
+    print("\n" + "=" * 80)
+    print(
+        f"BUSINESS QUESTION: Actors with highest average film rating (min. {min_films} films) by region"
+    )
+    print("=" * 80)
+
+    basics_df = datasets["title.basics"]
+    principals_df = datasets["title.principals"]
+    ratings_df = datasets["title.ratings"]
+    names_df = datasets["name.basics"]
+    akas_df = datasets["title.akas"]
+
+    # Get top regions
+    top_regions = get_top_regions(akas_df, top_n_regions)
+    print(f"Analyzing top actors for regions: {top_regions}")
+
+    # Filter akas to only these regions and get unique title-region pairs
+    regional_akas = (
+        akas_df.filter(F.col("region").isin(top_regions))
+        .select(F.col("titleId").alias("tconst"), "region")
+        .distinct()
+    )
+
     # Filter only movies
-    movies = basics_df.filter(F.col("titleType") == "movie")
-    
+    movies = basics_df.filter(F.col("titleType") == "movie").select("tconst")
+
     # Filter only actors and actresses
     actors = principals_df.filter(
         (F.col("category") == "actor") | (F.col("category") == "actress")
     )
-    
-    # Join movies with actors
-    movies_actors = movies.join(
-        actors,
-        movies.tconst == actors.tconst,
-        "inner"
-    ).drop(actors.tconst)
-    
+
+    # Join movies with actors and regional_akas
+    movies_actors_regional = (
+        actors.join(movies, "tconst").join(regional_akas, "tconst")
+    )
+
     # Join with ratings
-    movies_actors_ratings = movies_actors.join(
-        ratings_df,
-        movies_actors.tconst == ratings_df.tconst,
-        "inner"
-    ).drop(ratings_df.tconst)
-    
-    # Group by actors and calculate average rating
-    actor_stats = movies_actors_ratings.groupBy("nconst") \
+    movies_actors_ratings = movies_actors_regional.join(
+        ratings_df.select("tconst", "averageRating", "numVotes"), "tconst"
+    )
+
+    # Group by region and actor, calculate average rating
+    actor_stats = (
+        movies_actors_ratings.groupBy("region", "nconst")
         .agg(
             F.avg("averageRating").alias("avg_rating"),
             F.count("*").alias("film_count"),
-            F.sum("numVotes").alias("total_votes")
-        ) \
+            F.sum("numVotes").alias("total_votes"),
+        )
         .filter(F.col("film_count") >= min_films)
-    
+    )
+
     # Add actor names
     actor_stats_with_names = actor_stats.join(
-        names_df.select("nconst", "primaryName", "birthYear"),
-        "nconst",
-        "inner"
+        names_df.select("nconst", "primaryName", "birthYear"), "nconst", "inner"
     )
-    
-    print(f"\nTop-{top_n} actors with highest average rating:")
-    top_actors = actor_stats_with_names.orderBy(F.desc("avg_rating")).limit(top_n)
-    top_actors.select(
-        "primaryName", "film_count", F.round("avg_rating", 2).alias("avg_rating"),
-        "total_votes", "birthYear"
-    ).show(truncate=False)
-    
-    # Visualization
-    top_actors_pd = top_actors.toPandas()
-    
-    if not top_actors_pd.empty:
-        fig, axes = plt.subplots(2, 2, figsize=(16, 12))
-        
-        # 1. Top actors by average rating
-        axes[0, 0].barh(range(len(top_actors_pd)), top_actors_pd['avg_rating'])
-        axes[0, 0].set_yticks(range(len(top_actors_pd)))
-        axes[0, 0].set_yticklabels(top_actors_pd['primaryName'], fontsize=9)
-        axes[0, 0].set_title(f'Top {top_n} Actors by Average Rating (min. {min_films} films)')
-        axes[0, 0].set_xlabel('Average Rating')
-        axes[0, 0].grid(True, alpha=0.3, axis='x')
-        axes[0, 0].invert_yaxis()
-        
-        # 2. Film count vs Average rating
-        axes[0, 1].scatter(top_actors_pd['film_count'], top_actors_pd['avg_rating'], 
-                          s=100, alpha=0.6, color='steelblue')
-        axes[0, 1].set_title('Film Count vs Average Rating')
-        axes[0, 1].set_xlabel('Number of Films')
-        axes[0, 1].set_ylabel('Average Rating')
-        axes[0, 1].grid(True, alpha=0.3)
-        
-        # 3. Total votes distribution
-        axes[1, 0].bar(range(len(top_actors_pd)), top_actors_pd['total_votes'], color='coral')
-        axes[1, 0].set_xticks(range(len(top_actors_pd)))
-        axes[1, 0].set_xticklabels(top_actors_pd['primaryName'], rotation=90, fontsize=8)
-        axes[1, 0].set_title('Total Votes (Popularity)')
-        axes[1, 0].set_ylabel('Total Votes')
-        axes[1, 0].grid(True, alpha=0.3, axis='y')
-        
-        # 4. Birth year distribution
-        if 'birthYear' in top_actors_pd.columns:
-            birth_year_clean = top_actors_pd['birthYear'].dropna()
-            if len(birth_year_clean) > 0:
-                axes[1, 1].hist(birth_year_clean, bins=15, color='mediumseagreen', edgecolor='black')
-                axes[1, 1].set_title('Birth Year Distribution of Top Actors')
-                axes[1, 1].set_xlabel('Birth Year')
-                axes[1, 1].set_ylabel('Number of Actors')
-                axes[1, 1].grid(True, alpha=0.3)
-        
+
+    # Get top actors per region
+    w_rank = Window.partitionBy("region").orderBy(F.desc("avg_rating"))
+    top_actors = (
+        actor_stats_with_names.withColumn("rank", F.rank().over(w_rank))
+        .filter(F.col("rank") <= top_n)
+        .orderBy("region", "rank")
+    )
+
+    result_pd = top_actors.toPandas()
+
+    if not result_pd.empty:
+        # Create subplots - one per region
+        num_regions = len(top_regions)
+        cols = 2
+        rows = (num_regions + 1) // 2
+
+        fig, axes = plt.subplots(rows, cols, figsize=(15, 5 * rows))
+        axes = axes.flatten() if num_regions > 1 else [axes]
+
+        for i, region in enumerate(top_regions):
+            ax = axes[i]
+            region_data = result_pd[result_pd["region"] == region].sort_values(
+                "avg_rating", ascending=False
+            )
+
+            if not region_data.empty:
+                sns.barplot(
+                    data=region_data,
+                    x="avg_rating",
+                    y="primaryName",
+                    hue="primaryName",
+                    palette="Greens_r",
+                    legend=False,
+                    ax=ax,
+                )
+                ax.set_title(
+                    f"Top {top_n} Actors by Rating in {region}\n(min. {min_films} films)",
+                    fontsize=12,
+                    fontweight="bold",
+                )
+                ax.set_xlabel("Average Rating", fontsize=10)
+                ax.set_ylabel("")
+                ax.set_xlim(0, 10)
+            else:
+                ax.text(0.5, 0.5, "No data", ha="center", va="center")
+                ax.set_title(f"Top Actors in {region}")
+
+        # Hide unused subplots
+        for j in range(i + 1, len(axes)):
+            axes[j].axis("off")
+
         plt.tight_layout()
-        plt.savefig(os.path.join(save_path, f"top_actors_by_rating_{min_films}.png"), dpi=300)
+        plt.savefig(
+            os.path.join(save_path, f"top_actors_by_rating_regional_{min_films}.png"),
+            dpi=300,
+            bbox_inches="tight",
+        )
         plt.show()
-    
-    return actor_stats_with_names
+
+    return top_actors
 
 
-def young_actors_2000s(datasets, save_path=".", years_back=5):
+def young_actors_2000s(datasets, save_path=".", years_back=5, top_n_regions=5):
     """
     Analyzes actor age distribution in recent films by age groups.
     Tracks trends in actor demographics and age group demand over time.
@@ -229,148 +377,184 @@ def young_actors_2000s(datasets, save_path=".", years_back=5):
         datasets (dict): A dictionary of Spark DataFrames.
         save_path (str): The path to save the visualizations.
         years_back (int): Number of years back from current year. Defaults to 5.
-    
+
     Returns:
         pyspark.sql.DataFrame: A DataFrame with actor age distribution across five age groups.
     """
     os.makedirs(save_path, exist_ok=True)
-    
+
     from datetime import datetime
+
     current_year = datetime.now().year
     start_year = current_year - years_back
-    
-    print("\n" + "="*80)
-    print(f"BUSINESS QUESTION: Actor age distribution in films {start_year}-{current_year}")
-    print("="*80)
-    
-    basics_df = datasets['title.basics']
-    principals_df = datasets['title.principals']
-    names_df = datasets['name.basics']
-    
+
+    print("\n" + "=" * 80)
+    print(
+        f"BUSINESS QUESTION: Actor age distribution in films {start_year}-{current_year}"
+    )
+    print("=" * 80)
+
+    basics_df = datasets["title.basics"]
+    principals_df = datasets["title.principals"]
+    names_df = datasets["name.basics"]
+    akas_df = datasets["title.akas"]
+
+    # Filter movies by region
+    basics_df = filter_by_region(basics_df, akas_df, top_n_regions)
+
     # Filter films from the last N years
     recent_movies = basics_df.filter(
-        (F.col("titleType") == "movie") &
-        (F.col("startYear") >= start_year) &
-        (F.col("startYear") <= current_year)
+        (F.col("titleType") == "movie")
+        & (F.col("startYear") >= start_year)
+        & (F.col("startYear") <= current_year)
     )
-    
+
     # Filter actors/actresses
     actors = principals_df.filter(
         (F.col("category") == "actor") | (F.col("category") == "actress")
     )
-    
+
     # Join films with actors
     movies_actors = recent_movies.join(
-        actors,
-        recent_movies.tconst == actors.tconst,
-        "inner"
+        actors, recent_movies.tconst == actors.tconst, "inner"
     ).drop(actors.tconst)
-    
+
     # Join with actor information
     actors_info = movies_actors.join(
-        names_df.filter(F.col("birthYear").isNotNull()),
-        "nconst",
-        "inner"
+        names_df.filter(F.col("birthYear").isNotNull()), "nconst", "inner"
     )
-    
+
     # Calculate actor's age at film release
     actors_with_age = actors_info.withColumn(
-        "age_at_release",
-        F.col("startYear") - F.col("birthYear")
+        "age_at_release", F.col("startYear") - F.col("birthYear")
     ).filter((F.col("age_at_release") >= 18) & (F.col("age_at_release") <= 100))
-    
+
     # Create age groups
     actors_with_age = actors_with_age.withColumn(
         "age_group",
-        F.when((F.col("age_at_release") >= 18) & (F.col("age_at_release") <= 25), "18-25 (Youth)")
-         .when((F.col("age_at_release") >= 26) & (F.col("age_at_release") <= 35), "26-35 (Prime)")
-         .when((F.col("age_at_release") >= 36) & (F.col("age_at_release") <= 45), "36-45 (Mature)")
-         .when((F.col("age_at_release") >= 46) & (F.col("age_at_release") <= 55), "46-55 (Experienced)")
-         .otherwise("56+ (Veterans)")
+        F.when(
+            (F.col("age_at_release") >= 18) & (F.col("age_at_release") <= 25),
+            "18-25 (Youth)",
+        )
+        .when(
+            (F.col("age_at_release") >= 26) & (F.col("age_at_release") <= 35),
+            "26-35 (Prime)",
+        )
+        .when(
+            (F.col("age_at_release") >= 36) & (F.col("age_at_release") <= 45),
+            "36-45 (Mature)",
+        )
+        .when(
+            (F.col("age_at_release") >= 46) & (F.col("age_at_release") <= 55),
+            "46-55 (Experienced)",
+        )
+        .otherwise("56+ (Veterans)"),
     )
-    
+
     # Group by age categories
-    age_distribution = actors_with_age.groupBy("age_group") \
+    age_distribution = (
+        actors_with_age.groupBy("age_group")
         .agg(
             F.countDistinct("nconst").alias("unique_actors"),
             F.count("*").alias("total_roles"),
-            F.avg("age_at_release").alias("avg_age")
-        ) \
+            F.avg("age_at_release").alias("avg_age"),
+        )
         .orderBy("avg_age")
-    
+    )
+
     print(f"\nActor distribution by age groups in films {start_year}-{current_year}:")
     age_distribution.select(
         "age_group",
         "unique_actors",
         "total_roles",
-        F.round("avg_age", 1).alias("avg_age")
+        F.round("avg_age", 1).alias("avg_age"),
     ).show(truncate=False)
-    
+
     # Additional: trend by years
     print("\nTrend by years (average actor age):")
-    yearly_trend = actors_with_age.groupBy("startYear") \
+    yearly_trend = (
+        actors_with_age.groupBy("startYear")
         .agg(
             F.avg("age_at_release").alias("avg_age"),
-            F.countDistinct("nconst").alias("unique_actors")
-        ) \
+            F.countDistinct("nconst").alias("unique_actors"),
+        )
         .orderBy("startYear")
-    
+    )
+
     yearly_trend.select(
-        "startYear",
-        F.round("avg_age", 1).alias("avg_age"),
-        "unique_actors"
+        "startYear", F.round("avg_age", 1).alias("avg_age"), "unique_actors"
     ).show()
-    
+
     # Visualization
     age_dist_pd = age_distribution.toPandas()
     yearly_trend_pd = yearly_trend.toPandas()
-    
+
     if not age_dist_pd.empty:
         fig, axes = plt.subplots(2, 2, figsize=(16, 12))
-        
+
         # 1. Age group distribution (unique actors)
-        axes[0, 0].bar(age_dist_pd['age_group'], age_dist_pd['unique_actors'], color='steelblue')
-        axes[0, 0].set_title(f'Unique Actors by Age Group ({start_year}-{current_year})')
-        axes[0, 0].set_xlabel('Age Group')
-        axes[0, 0].set_ylabel('Number of Unique Actors')
-        axes[0, 0].tick_params(axis='x', rotation=45)
-        axes[0, 0].grid(True, alpha=0.3, axis='y')
-        
+        axes[0, 0].bar(
+            age_dist_pd["age_group"], age_dist_pd["unique_actors"], color="steelblue"
+        )
+        axes[0, 0].set_title(
+            f"Unique Actors by Age Group ({start_year}-{current_year})"
+        )
+        axes[0, 0].set_xlabel("Age Group")
+        axes[0, 0].set_ylabel("Number of Unique Actors")
+        axes[0, 0].tick_params(axis="x", rotation=45)
+        axes[0, 0].grid(True, alpha=0.3, axis="y")
+
         # 2. Total roles by age group
-        axes[0, 1].bar(age_dist_pd['age_group'], age_dist_pd['total_roles'], color='coral')
-        axes[0, 1].set_title(f'Total Roles by Age Group ({start_year}-{current_year})')
-        axes[0, 1].set_xlabel('Age Group')
-        axes[0, 1].set_ylabel('Total Number of Roles')
-        axes[0, 1].tick_params(axis='x', rotation=45)
-        axes[0, 1].grid(True, alpha=0.3, axis='y')
-        
+        axes[0, 1].bar(
+            age_dist_pd["age_group"], age_dist_pd["total_roles"], color="coral"
+        )
+        axes[0, 1].set_title(f"Total Roles by Age Group ({start_year}-{current_year})")
+        axes[0, 1].set_xlabel("Age Group")
+        axes[0, 1].set_ylabel("Total Number of Roles")
+        axes[0, 1].tick_params(axis="x", rotation=45)
+        axes[0, 1].grid(True, alpha=0.3, axis="y")
+
         # 3. Average age trend by year
         if not yearly_trend_pd.empty:
-            axes[1, 0].plot(yearly_trend_pd['startYear'], yearly_trend_pd['avg_age'], 
-                           marker='o', linewidth=2, markersize=8, color='green')
-            axes[1, 0].set_title('Average Actor Age Trend Over Years')
-            axes[1, 0].set_xlabel('Year')
-            axes[1, 0].set_ylabel('Average Age')
+            axes[1, 0].plot(
+                yearly_trend_pd["startYear"],
+                yearly_trend_pd["avg_age"],
+                marker="o",
+                linewidth=2,
+                markersize=8,
+                color="green",
+            )
+            axes[1, 0].set_title("Average Actor Age Trend Over Years")
+            axes[1, 0].set_xlabel("Year")
+            axes[1, 0].set_ylabel("Average Age")
             axes[1, 0].grid(True, alpha=0.3)
-        
+
         # 4. Unique actors trend by year
         if not yearly_trend_pd.empty:
-            axes[1, 1].bar(yearly_trend_pd['startYear'], yearly_trend_pd['unique_actors'], color='purple')
-            axes[1, 1].set_title('Number of Unique Actors by Year')
-            axes[1, 1].set_xlabel('Year')
-            axes[1, 1].set_ylabel('Unique Actors')
-            axes[1, 1].grid(True, alpha=0.3, axis='y')
-        
+            axes[1, 1].bar(
+                yearly_trend_pd["startYear"],
+                yearly_trend_pd["unique_actors"],
+                color="purple",
+            )
+            axes[1, 1].set_title("Number of Unique Actors by Year")
+            axes[1, 1].set_xlabel("Year")
+            axes[1, 1].set_ylabel("Unique Actors")
+            axes[1, 1].grid(True, alpha=0.3, axis="y")
+
         plt.tight_layout()
-        plt.savefig(os.path.join(save_path, f"young_actors_{start_year}_{current_year}.png"), dpi=300)
+        plt.savefig(
+            os.path.join(save_path, f"young_actors_{start_year}_{current_year}.png"),
+            dpi=300,
+        )
         plt.show()
-    
+
     return age_distribution
 
 
-def rising_stars(dataframes, save_path="."):
+def rising_stars(dataframes, save_path=".", top_n_regions=5):
     """
     10 акторів із найшвидшим зростанням попиту (velocity росту голосів за фільми за 5 років)
+    по кожному з топ-N регіонів.
     """
 
     os.makedirs(save_path, exist_ok=True)
@@ -381,58 +565,146 @@ def rising_stars(dataframes, save_path="."):
     akas = dataframes["title.akas"]
     basics = dataframes["title.basics"]
 
+    # Get top regions
+    top_regions = get_top_regions(akas, top_n_regions)
+    print(f"Analyzing rising stars for regions: {top_regions}")
+
+    # Filter akas to only these regions and get unique title-region pairs
+    regional_akas = (
+        akas.filter(F.col("region").isin(top_regions))
+        .select(F.col("titleId").alias("tconst"), "region")
+        .distinct()
+    )
+
     actors = principals.filter(F.col("category").isin(["actor", "actress"]))
 
-  
-    works = actors.join(basics.select("tconst", "startYear"), "tconst") \
-                  .join(ratings.select("tconst", "numVotes"), "tconst") \
-                  .filter((F.col("startYear") >= F.lit(2018)) & (F.col("startYear") <= F.lit(2023)))
+    # Join everything: actors -> basics -> ratings -> regional_akas
+    # Ensure we only look at movies
+    works = (
+        actors.join(
+            basics.filter(F.col("titleType") == "movie").select("tconst", "startYear"),
+            "tconst",
+        )
+        .join(ratings.select("tconst", "numVotes", "averageRating"), "tconst")
+        .join(regional_akas, "tconst")
+        .filter((F.col("startYear") >= 2018) & (F.col("startYear") <= 2023))
+    )
 
-    votes_by_year = works.groupBy("nconst", "startYear") \
-                         .agg(F.avg("numVotes").alias("avg_votes"))
+    # Calculate avg votes AND avg rating per actor per year per region
+    yearly_stats = works.groupBy("region", "nconst", "startYear").agg(
+        F.avg("numVotes").alias("avg_votes"),
+        F.avg("averageRating").alias("avg_rating"),
+        F.count("tconst").alias("films_this_year"),
+    )
 
-   
-    window_count_years = Window.partitionBy("nconst")
-    votes_by_year_filtered = votes_by_year.withColumn("num_years", F.count("*").over(window_count_years)) \
-                                          .filter(F.col("num_years") > 1) \
-                                          .select("nconst", "startYear", "avg_votes") # Прибираємо зайвий стовпець
+    # Filter actors with > 1 year of data (per region) AND minimum total films in region
+    window_count_years = Window.partitionBy("region", "nconst")
+    yearly_stats_filtered = (
+        yearly_stats.withColumn("num_years", F.count("*").over(window_count_years))
+        .withColumn(
+            "total_films_in_region", F.sum("films_this_year").over(window_count_years)
+        )
+        .filter((F.col("num_years") > 1) & (F.col("total_films_in_region") >= 3))
+    )
 
-    
-    
-    w = Window.partitionBy("nconst").orderBy("startYear")
-    votes_enriched = votes_by_year_filtered.withColumn("prev_avg", F.lag("avg_votes").over(w))
-    votes_enriched = votes_enriched.withColumn("velocity", F.col("avg_votes") - F.col("prev_avg"))
+    # Calculate velocity for both votes and ratings
+    w = Window.partitionBy("region", "nconst").orderBy("startYear")
+    stats_enriched = yearly_stats_filtered.withColumn(
+        "prev_avg_votes", F.lag("avg_votes").over(w)
+    ).withColumn("prev_avg_rating", F.lag("avg_rating").over(w))
 
-    actor_velocity = votes_enriched.groupBy("nconst") \
-        .agg(F.avg("velocity").alias("avg_velocity")) \
-        .filter(F.col("avg_velocity") > 0) \
-        .orderBy(F.desc("avg_velocity")) \
-        .limit(10)
+    stats_enriched = stats_enriched.withColumn(
+        "vote_velocity", F.col("avg_votes") - F.col("prev_avg_votes")
+    ).withColumn("rating_trend", F.col("avg_rating") - F.col("prev_avg_rating"))
 
-    result = actor_velocity.join(name_basics.select("nconst", "primaryName"), "nconst")
+    # Calculate composite "rising star" score per actor per region
+    # Score = avg(vote_velocity) * avg(rating) - we want both growing popularity AND quality
+    actor_metrics = (
+        stats_enriched.groupBy("region", "nconst")
+        .agg(
+            F.avg("vote_velocity").alias("avg_vote_velocity"),
+            F.avg("rating_trend").alias("avg_rating_trend"),
+            F.avg("avg_rating").alias("overall_avg_rating"),
+        )
+        .filter(F.col("avg_vote_velocity") > 0)
+    )  # Must have positive vote growth
 
-    
+    # Composite score: vote velocity weighted by rating quality
+    # Normalize vote velocity (divide by 1000) and multiply by rating
+    actor_metrics = actor_metrics.withColumn(
+        "rising_star_score",
+        (F.col("avg_vote_velocity") / 1000) * F.col("overall_avg_rating")
+        + F.col("avg_rating_trend") * 10,
+    )
+
+    # Rank top 10 per region by composite score
+    w_rank = Window.partitionBy("region").orderBy(F.desc("rising_star_score"))
+    top_actors = actor_metrics.withColumn("rank", F.rank().over(w_rank)).filter(
+        F.col("rank") <= 10
+    )
+
+    # Join with names
+    result = (
+        top_actors.join(name_basics.select("nconst", "primaryName"), "nconst")
+        .select(
+            "region",
+            "primaryName",
+            "rising_star_score",
+            "avg_vote_velocity",
+            "avg_rating_trend",
+            "overall_avg_rating",
+            "rank",
+        )
+        .orderBy("region", "rank")
+    )
+
     result_pd = result.toPandas()
 
     if not result_pd.empty:
-        result_pd = result_pd.sort_values('avg_velocity', ascending=False)
-        plt.figure(figsize=(12, 6))
-        sns.barplot(data=result_pd, x="primaryName", y="avg_velocity")
-        plt.title("Top 10 Rising Actors (Velocity of Demand Growth)")
-        plt.xlabel("Actor")
-        plt.ylabel("Avg Vote Growth per Year")
-        plt.xticks(rotation=45, ha='right')
+        # Create subplots
+        num_regions = len(top_regions)
+        cols = 2
+        rows = (num_regions + 1) // 2
+
+        fig, axes = plt.subplots(rows, cols, figsize=(15, 5 * rows))
+        axes = axes.flatten() if num_regions > 1 else [axes]
+
+        for i, region in enumerate(top_regions):
+            ax = axes[i]
+            region_data = result_pd[result_pd["region"] == region].sort_values(
+                "rising_star_score", ascending=False
+            )
+
+            if not region_data.empty:
+                sns.barplot(
+                    data=region_data,
+                    x="rising_star_score",
+                    y="primaryName",
+                    hue="primaryName",
+                    palette="viridis",
+                    legend=False,
+                    ax=ax,
+                )
+                ax.set_title(f"Rising Stars in {region}")
+                ax.set_xlabel("Rising Star Score (Popularity + Quality)")
+                ax.set_ylabel("")
+            else:
+                ax.text(0.5, 0.5, "No data", ha="center", va="center")
+
+        # Hide unused subplots
+        for j in range(i + 1, len(axes)):
+            axes[j].axis("off")
+
         plt.tight_layout()
-        plt.savefig(os.path.join(save_path, "rising_stars.png"))
+        plt.savefig(os.path.join(save_path, "rising_stars_regional.png"))
         plt.show()
 
     return result
 
 
-
-def fading_stars(dataframes, save_path="."):
+def fading_stars(dataframes, save_path=".", top_n_regions=5):
     """
-    Аналіз 'згасаючих зірок':
+    Аналіз 'згасаючих зірок' по регіонах:
     режисери або актори, які мали середній рейтинг >7.5 у 2000-х,
     але <5.5 у 2020-х.
     """
@@ -443,56 +715,126 @@ def fading_stars(dataframes, save_path="."):
     principals = dataframes["title.principals"]
     ratings = dataframes["title.ratings"]
     basics = dataframes["title.basics"]
+    akas = dataframes["title.akas"]
+
+    # Get top regions
+    top_regions = get_top_regions(akas, top_n_regions)
+    print(f"Analyzing fading stars for regions: {top_regions}")
+
+    # Filter akas to only these regions and get unique title-region pairs
+    regional_akas = (
+        akas.filter(F.col("region").isin(top_regions))
+        .select(F.col("titleId").alias("tconst"), "region")
+        .distinct()
+    )
 
     people = principals.filter(
         F.col("category").isin(["actor", "actress", "director"])
     ).select("tconst", "nconst", "category")
 
-    joined = people.join(basics.select("tconst", "startYear"), "tconst") \
-                   .join(ratings.select("tconst", "averageRating"), "tconst") \
-                   .filter(F.col("startYear").isNotNull())
-
-    joined = joined.withColumn(
-        "decade",
-        (F.col("startYear") / 10).cast("int") * 10
+    # Join everything: people -> basics -> ratings -> regional_akas
+    # Ensure we only look at movies
+    joined = (
+        people.join(
+            basics.filter(F.col("titleType") == "movie").select("tconst", "startYear"),
+            "tconst",
+        )
+        .join(ratings.select("tconst", "averageRating"), "tconst")
+        .join(regional_akas, "tconst")
+        .filter(F.col("startYear").isNotNull())
     )
 
-    avg_by_decade = joined.groupBy("nconst", "category", "decade") \
-                          .agg(F.avg("averageRating").alias("avg_rating"))
+    joined = joined.withColumn("decade", (F.col("startYear") / 10).cast("int") * 10)
 
-    decade_pivot = avg_by_decade.groupBy("nconst", "category").pivot("decade").agg(F.first("avg_rating"))
-
-    decade_filtered = decade_pivot.filter(
-        F.col("2000").isNotNull() & F.col("2020").isNotNull()
+    # Group by region, nconst, category, decade
+    avg_by_decade = joined.groupBy("region", "nconst", "category", "decade").agg(
+        F.avg("averageRating").alias("avg_rating"),
+        F.count("tconst").alias("film_count"),
     )
 
-    fading = decade_filtered.filter(
-        (F.col("2000") > 7.5) & (F.col("2020") < 5.5)
+    # Filter: require at least 3 films per person per region (across all decades)
+    window_region_person = Window.partitionBy("region", "nconst")
+    avg_by_decade = avg_by_decade.withColumn(
+        "total_films_in_region", F.sum("film_count").over(window_region_person)
+    ).filter(F.col("total_films_in_region") >= 3)
+
+    # Pivot decade
+    decade_pivot = (
+        avg_by_decade.groupBy("region", "nconst", "category")
+        .pivot("decade")
+        .agg(F.first("avg_rating"))
     )
 
-    result = fading.join(name_basics.select("nconst", "primaryName"), "nconst") \
-                   .select("primaryName", "category", "2000", "2020") \
-                   .orderBy(F.asc("2020"))
+    # Filter for fading stars
+    # Check if columns exist (might not if no data for those decades)
+    if "2000" in decade_pivot.columns and "2020" in decade_pivot.columns:
+        fading = decade_pivot.filter(
+            (F.col("2000").isNotNull())
+            & (F.col("2020").isNotNull())
+            & (F.col("2000") > 7.5)
+            & (F.col("2020") < 5.5)
+        )
+    else:
+        print("Not enough data for 2000s and 2020s comparison.")
+        return None
 
-    result_pd = result.limit(20).toPandas()
+    # Calculate rating decline score
+    fading = fading.withColumn("decline_score", F.col("2000") - F.col("2020"))
+
+    # Rank top 10 per region by decline score
+    w_rank = Window.partitionBy("region").orderBy(F.desc("decline_score"))
+    top_fading = fading.withColumn("rank", F.rank().over(w_rank)).filter(
+        F.col("rank") <= 10
+    )
+
+    result = (
+        top_fading.join(name_basics.select("nconst", "primaryName"), "nconst")
+        .select(
+            "region", "primaryName", "category", "2000", "2020", "decline_score", "rank"
+        )
+        .orderBy("region", "rank")
+    )
+
+    result_pd = result.toPandas()
 
     if not result_pd.empty:
-        plt.figure(figsize=(12, 6))
-        sns.scatterplot(
-            data=result_pd,
-            x="2000", y="2020",
-            hue="category",
-            s=100
-        )
-        for _, row in result_pd.iterrows():
-            plt.text(row["2000"] + 0.02, row["2020"] - 0.05, row["primaryName"], fontsize=9)
-        plt.title("'Згасаючі зірки' — падіння середнього рейтингу між 2000-ми і 2020-ми")
-        plt.xlabel("Середній рейтинг у 2000-х")
-        plt.ylabel("Середній рейтинг у 2020-х")
-        plt.axhline(5.5, color="r", linestyle="--", alpha=0.5)
-        plt.axvline(7.5, color="g", linestyle="--", alpha=0.5)
+        # Create subplots - same style as rising_stars
+        num_regions = len(top_regions)
+        cols = 2
+        rows = (num_regions + 1) // 2
+
+        fig, axes = plt.subplots(rows, cols, figsize=(15, 5 * rows))
+        axes = axes.flatten() if num_regions > 1 else [axes]
+
+        for i, region in enumerate(top_regions):
+            ax = axes[i]
+            region_data = result_pd[result_pd["region"] == region].sort_values(
+                "decline_score", ascending=False
+            )
+
+            if not region_data.empty:
+                sns.barplot(
+                    data=region_data,
+                    x="decline_score",
+                    y="primaryName",
+                    hue="primaryName",
+                    palette="Reds_r",
+                    legend=False,
+                    ax=ax,
+                )
+                ax.set_title(f"Fading Stars in {region}")
+                ax.set_xlabel("Rating Decline (2000s - 2020s)")
+                ax.set_ylabel("")
+            else:
+                ax.text(0.5, 0.5, "No fading stars found", ha="center", va="center")
+                ax.set_title(f"Fading Stars in {region}")
+
+        # Hide unused subplots
+        for j in range(i + 1, len(axes)):
+            axes[j].axis("off")
+
         plt.tight_layout()
-        plt.savefig(os.path.join(save_path, "fading_stars.png"))
+        plt.savefig(os.path.join(save_path, "fading_stars_regional.png"))
         plt.show()
 
     return result
