@@ -70,4 +70,31 @@ def describe_dataframe(df, name):
         analyze_string_columns(df, string_cols)
     else:
         print("The table has no text columns for analysis.")
-        
+
+def get_top_regions(akas_df, top_n=5):
+    """
+    Identifies the top N regions based on the number of DISTINCT titles.
+    This prevents regions with many alternate titles from being overrepresented.
+    """
+    region_counts = (
+        akas_df.filter(F.col("region") != "\\N")
+        .groupBy("region")
+        .agg(F.approx_count_distinct("titleId").alias("distinct_titles"))
+        .orderBy(F.col("distinct_titles").desc())
+        .limit(top_n)
+    )
+    return [row.region for row in region_counts.collect()]
+
+def filter_by_region(df, akas_df, top_n=5, tconst_col="tconst"):
+    """
+    Filters a DataFrame to include only titles present in the top N regions.
+    """
+    top_regions = get_top_regions(akas_df, top_n)
+    print(f"Filtering by top {top_n} regions: {', '.join(top_regions)}")
+    
+    # Get titles available in these regions
+    valid_titles = akas_df.filter(F.col("region").isin(top_regions)).select(F.col("titleId").alias(tconst_col)).distinct()
+    
+    # Broadcast join for efficiency if valid_titles is small, but it might not be.
+    # Standard join is safer for large datasets.
+    return df.join(valid_titles, tconst_col, "inner")

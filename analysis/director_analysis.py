@@ -6,9 +6,10 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from pyspark.sql import functions as F
 from pyspark.sql.window import Window
+from analysis.general import filter_by_region
 
 
-def directors_increasing_ratings_trend(dataframes, save_path="."):
+def directors_increasing_ratings_trend(dataframes, save_path=".", top_n_regions=5):
     """
     Analyzes the trend of directors' average film ratings over the past 10 years.
 
@@ -28,6 +29,10 @@ def directors_increasing_ratings_trend(dataframes, save_path="."):
     title_ratings = dataframes["title.ratings"]
     title_crew = dataframes["title.crew"]
     name_basics = dataframes["name.basics"]
+    title_akas = dataframes["title.akas"]
+
+    # Filter basics by region
+    title_basics = filter_by_region(title_basics, title_akas, top_n_regions)
 
     # Filter for movies in the last 10 years
     movies = title_basics.filter(
@@ -104,50 +109,105 @@ def directors_increasing_ratings_trend(dataframes, save_path="."):
     return director_trend_count
 
 
-def top_directors_by_high_rating_and_votes(dataframes, save_path="."):
+def top_directors_by_high_rating_and_votes(dataframes, save_path=".", top_n_regions=5):
+    """Analyzes top directors with high-rated films by region."""
     os.makedirs(save_path, exist_ok=True)
     title_crew = dataframes["title.crew"]
     ratings = dataframes["title.ratings"]
     basics = dataframes["title.basics"]
     name_basics = dataframes["name.basics"]
+    akas = dataframes["title.akas"]
+
+    # Get top regions
+    top_regions = get_top_regions(akas, top_n_regions)
+    print(f"Analyzing top directors for regions: {top_regions}")
+
+    # Filter akas to only these regions
+    regional_akas = (
+        akas.filter(F.col("region").isin(top_regions))
+        .select(F.col("titleId").alias("tconst"), "region")
+        .distinct()
+    )
 
     directors = title_crew.withColumn("nconst", F.explode(F.split(F.col("directors"), ",")))
 
-    directors_rated = directors.join(ratings, "tconst") \
-                               .join(basics.select("tconst", "startYear"), "tconst") \
-                               .join(name_basics.select("nconst", "primaryName"), "nconst")
+    directors_rated = (
+        directors.join(ratings, "tconst")
+        .join(basics.filter(F.col("titleType") == "movie").select("tconst", "startYear"), "tconst")
+        .join(regional_akas, "tconst")
+        .join(name_basics.select("nconst", "primaryName"), "nconst")
+        .filter(F.col("averageRating") > 8)
+    )
 
-    directors_rated = directors_rated.filter(F.col("averageRating") > 8)
+    # Get top directors per region
+    top_directors_by_region = (
+        directors_rated.groupBy("region", "primaryName")
+        .agg(
+            F.count("tconst").alias("num_high_rated_films"),
+            F.avg("numVotes").alias("avg_votes")
+        )
+    )
 
-    yearly_stats = directors_rated.groupBy("primaryName", "startYear").agg(
-        F.count("tconst").alias("num_films"),
-        F.avg("numVotes").alias("avg_votes")
-    ).orderBy("primaryName", "startYear")
-    
-    # Find top directors by total number of high-rated films
-    top_directors_by_count = directors_rated.groupBy("primaryName").count().orderBy(F.desc("count")).limit(10)
-    
-    # Filter yearly stats for top directors
-    top_directors_trends = yearly_stats.join(top_directors_by_count.select("primaryName"), "primaryName")
-    
-    trends_pd = top_directors_trends.toPandas()
+    w_rank = Window.partitionBy("region").orderBy(F.desc("num_high_rated_films"))
+    top_directors = (
+        top_directors_by_region.withColumn("rank", F.rank().over(w_rank))
+        .filter(F.col("rank") <= 15)
+        .orderBy("region", "rank")
+    )
 
-    if not trends_pd.empty:
-        plt.figure(figsize=(14, 7))
-        sns.lineplot(data=trends_pd, x="startYear", y="avg_votes", hue="primaryName", marker="o")
-        plt.title("Popularity Trend (Avg. Votes) for Directors with Most High-Rated (>8) Films")
-        plt.xlabel("Year")
-        plt.ylabel("Average Number of Votes")
-        plt.legend(title="Director", bbox_to_anchor=(1.05, 1), loc='upper left')
-        plt.grid(True)
+    result_pd = top_directors.toPandas()
+
+    if not result_pd.empty:
+        # Create subplots
+        num_regions = len(top_regions)
+        cols = 2
+        rows = (num_regions + 1) // 2
+
+        fig, axes = plt.subplots(rows, cols, figsize=(15, 6 * rows))
+        axes = axes.flatten() if num_regions > 1 else [axes]
+
+        for i, region in enumerate(top_regions):
+            ax = axes[i]
+            region_data = result_pd[result_pd["region"] == region].head(15)
+
+            if not region_data.empty:
+                sns.barplot(
+                    data=region_data,
+                    x="num_high_rated_films",
+                    y="primaryName",
+                    hue="primaryName",
+                    palette="rocket_r",
+                    legend=False,
+                    orient="h",
+                    ax=ax,
+                )
+                ax.set_title(
+                    f"Top Directors in {region}\n(Films with Rating > 8)",
+                    fontsize=12,
+                    fontweight="bold",
+                )
+                ax.set_xlabel("Number of High-Rated Films", fontsize=10)
+                ax.set_ylabel("")
+            else:
+                ax.text(0.5, 0.5, "No data", ha="center", va="center")
+                ax.set_title(f"Top Directors in {region}")
+
+        # Hide unused subplots
+        for j in range(i + 1, len(axes)):
+            axes[j].axis("off")
+
         plt.tight_layout()
-        plt.savefig(os.path.join(save_path, "top_directors_votes_trend.png"))
+        plt.savefig(
+            os.path.join(save_path, "top_directors_regional.png"),
+            dpi=300,
+            bbox_inches="tight",
+        )
         plt.show()
 
-    return yearly_stats
+    return top_directors
 
 
-def director_career_span_analysis(dataframes, save_path=".", min_career_length=20, min_film_count=10, num_directors_to_plot=7):
+def director_career_span_analysis(dataframes, save_path=".", min_career_length=20, min_film_count=10, num_directors_to_plot=7, top_n_regions=5):
     """
     Analyzes the evolution of director ratings over their entire career span.
     """
@@ -156,6 +216,10 @@ def director_career_span_analysis(dataframes, save_path=".", min_career_length=2
     title_basics = dataframes["title.basics"]
     title_ratings = dataframes["title.ratings"]
     name_basics = dataframes["name.basics"]
+    title_akas = dataframes["title.akas"]
+
+    # Filter basics by region
+    title_basics = filter_by_region(title_basics, title_akas, top_n_regions)
 
     # Get director films
     director_films = title_crew.withColumn("nconst", F.explode(F.split(F.col("directors"), ","))) \
